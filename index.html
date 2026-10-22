@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en-GB" data-theme="aurora">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Life of Me</title>
+<meta name="description" content="A private diary that lives only on your phone.">
+<meta name="theme-color" content="#EEF0FF">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Life of Me">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preload" href="fonts/jakarta.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+  // Apply theme before first paint to avoid a flash.
+  (function () {
+    try {
+      var t = localStorage.getItem('diary.theme') || 'aurora';
+      var m = localStorage.getItem('diary.mode') || 'system';
+      var dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = t;
+      document.documentElement.dataset.dark = dark ? '1' : '0';
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true">
+    <div class="photo" id="photo"></div>
+    <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
+    <span class="photo-scrim"></span>
+    <span class="tint t-spring"></span><span class="tint t-summer"></span><span class="tint t-autumn"></span><span class="tint t-winter"></span>
+    <span class="grain"></span>
+  </div>
+  <canvas id="scene" aria-hidden="true"></canvas>
+
+  <main id="app" class="app"></main>
+
+  <nav class="tabbar glass" id="tabbar" aria-label="Main">
+    <a href="#/today" data-tab="today" class="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg>
+      <span>Today</span>
+    </a>
+    <a href="#/timeline" data-tab="timeline" class="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6" rx="2.5"/><rect x="4" y="14" width="16" height="6" rx="2.5"/></svg>
+      <span>Timeline</span>
+    </a>
+    <a href="#/workouts" data-tab="workouts" class="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/></svg>
+      <span>Workouts</span>
+    </a>
+    <a href="#/settings" data-tab="settings" class="tab">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></svg>
+      <span>Settings</span>
+    </a>
+    <span class="tab-indicator" aria-hidden="true"></span>
+  </nav>
+
+  <div id="layer"></div>
+  <div id="toast" class="toast glass" role="status" aria-live="polite"></div>
+
+  <script src="workouts-data.js"></script>
+  <script src="scene.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
