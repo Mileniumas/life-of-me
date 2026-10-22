@@ -468,7 +468,7 @@ function viewSettings(app) {
 
 /* ───────── Backup ───────── */
 async function exportBackup() {
-  const data = { app: 'life-of-me', version: 4, exportedAt: new Date().toISOString(), entries: sorted(), workoutBlocks: WK.all() };
+  const data = { app: 'life-of-me', version: 5, exportedAt: new Date().toISOString(), entries: sorted(), workoutBlocks: WK.all(), trophies: TR.get(), workoutStats: WKS.get() };
   const name = `life-of-me-backup-${dayKey()}.json`;
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   try {
@@ -507,13 +507,23 @@ async function importBackup(file) {
           const pr = WK.of(prog, day); const before = JSON.stringify(pr);
           for (const [slug, v] of Object.entries(inc.ex || {})) if (v === true && /^[a-z0-9-]+$/.test(slug)) pr.ex[slug] = true;
           if (inc.done === true && !pr.done) { pr.done = true; pr.doneAt = typeof inc.doneAt === 'string' ? inc.doneAt : new Date().toISOString(); }
+          if (typeof inc.warm === 'boolean' && pr.warm === undefined) pr.warm = inc.warm; else if (inc.warm === true) pr.warm = true;
           if (JSON.stringify(pr) !== before) wkMerged++;
         }
       }
       WK.saveAll(all);
     }
+    // v5: trophies { id: unlockedAt } (earliest date wins) and timer counters (highest wins)
+    let trMerged = 0;
+    if (data && data.trophies && typeof data.trophies === 'object') { const got = TR.get();
+      for (const [id, at] of Object.entries(data.trophies)) if (TROPHIES.some((t) => t.id === id) && typeof at === 'string' && !isNaN(new Date(at)) && (!got[id] || at < got[id])) { if (!got[id]) trMerged++; got[id] = at; }
+      TR.save(got); }
+    if (data && data.workoutStats && typeof data.workoutStats === 'object') { const s = WKS.get();
+      for (const k of ['timers', 'timerSets', 'warmTimers']) { const v = +data.workoutStats[k]; if (Number.isFinite(v) && v > (+s[k] || 0)) s[k] = Math.floor(v); }
+      LS.set('wkstats', JSON.stringify(s)); }
     await load();
-    toast(added + updated || wkMerged ? `Imported ${added} new${updated ? `, ${updated} updated` : ''}${wkMerged ? ` · ${wkMerged} workout${wkMerged === 1 ? '' : 's'}` : ''}` : 'Everything was already here');
+    toast(added + updated || wkMerged ? `Imported ${added} new${updated ? `, ${updated} updated` : ''}${wkMerged ? ` · ${wkMerged} workout${wkMerged === 1 ? '' : 's'}` : ''}${trMerged ? ` · ${trMerged} troph${trMerged === 1 ? 'y' : 'ies'}` : ''}` : trMerged ? `Imported ${trMerged} troph${trMerged === 1 ? 'y' : 'ies'}` : 'Everything was already here');
+    checkTrophies({ quiet: true });
   } catch (e) { toast('That file isn’t a Life of Me backup'); }
 }
 
@@ -601,6 +611,7 @@ function viewWorkouts(app, blockId) {
       <div class="wk-sum-txt"><span class="eyebrow">Block ${b.block}${b === def ? ' · Current' : ''}</span><b>${esc(b.title || 'Workout plan')}</b><small>${shortRange(b)} · ${total} sessions</small>
         <div class="wk-equip">${(b.equipment || []).map((q) => `<span class="tag">${esc(q[0].toUpperCase() + q.slice(1))}</span>`).join('')}</div></div>
     </section>
+    ${trophyEntryCard()}
     ${soon}${upcoming}
     <div class="wk-list">${b.workouts.map((w, i) => { const st = wkStatus(b, w, prog); const pr = prog[w.day] || { ex: {} }; const n = exDone(pr, w), d = parseKey(w.date);
       return `<a class="wk-card glass st-${st.id}" href="#/workout/${b.id}/${w.day}" style="${wkStyle(w)};--i:${i}">
@@ -637,7 +648,7 @@ function viewWorkout(app, blockId, day) {
       <p class="wk-rest">Rest: ${esc(w.rest)}</p>
       <div class="wk-progress"><div class="wk-bar big"><i></i></div><span class="wk-count"></span></div>
     </div>
-    <section class="card glass wk-block"><h2>${WICON.flame}Warm-up</h2>
+    <section class="card glass wk-block wk-warm"><h2>${WICON.flame}Warm-up<button class="tick warm-tick" role="checkbox" aria-checked="false" aria-label="Warm-up done" data-warmtick>${WICON.check}</button></h2>
       <ol class="wk-steps">${(w.warmup || []).map((x, i) => { const t = timerOfWarm(x);
         return `<li${t ? ' class="has-timer"' : ''}><b>${esc(x.move)}</b><span>${esc(x.detail)}</span>${t ? `<button class="t-btn" data-warm="${i}" aria-label="Start ${esc(x.move)} timer, ${t.sides > 1 ? '2 sides of ' : ''}${fmtT(t.work)}">${WICON.play}${t.sides > 1 ? '2×' : ''}${fmtT(t.work)}</button>` : ''}</li>`; }).join('')}</ol></section>
     <h2 class="wk-section">Exercises</h2>
@@ -660,6 +671,7 @@ function viewWorkout(app, blockId, day) {
     bar.style.width = (pr.done ? 100 : n / w.exercises.length * 100) + '%'; count.textContent = pr.done ? 'Workout complete' : `${n} of ${w.exercises.length} exercises`;
     doneBtn.className = 'btn btn-block wk-done-btn ' + (pr.done ? 'btn-ghost' : 'btn-primary');
     doneBtn.innerHTML = pr.done ? `${WICON.check}Done — tap to undo` : `${WICON.check}Mark workout done`;
+    const wt = $('[data-warmtick]', app), wOn = pr.warm === true || (pr.done && pr.warm !== false); wt.setAttribute('aria-checked', wOn); wt.closest('.wk-warm').classList.toggle('is-done', wOn);
     const pill = $('.entry-top .wk-pill', app), s2 = wkStatus(b, w, prog); pill.className = `wk-pill pill-${s2.id}`; pill.innerHTML = (s2.id === 'done' ? WICON.check : '') + esc(s2.label); };
   render();
   $('[data-act="back"]', app).onclick = () => { history.length > 1 ? history.back() : (location.hash = '#/workouts/' + b.id); };
@@ -667,26 +679,35 @@ function viewWorkout(app, blockId, day) {
   app._wkClick = (ev) => {
     const t = ev.target.closest('[data-tick]'); if (t) { const s = t.dataset.tick; pr.ex[s] = !pr.ex[s]; if (!pr.ex[s]) delete pr.ex[s];
       t.setAttribute('aria-checked', !!pr.ex[s]); t.closest('.ex').classList.toggle('is-done', !!pr.ex[s]); haptic(pr.ex[s] ? 12 : 6); save(); render();
-      if (!pr.done && exDone(pr, w) === w.exercises.length) toast('All exercises ticked — mark the workout done?'); return; }
+      if (!pr.done && exDone(pr, w) === w.exercises.length) toast('All exercises ticked — mark the workout done?');
+      if (pr.ex[s]) { Beep.unlock(); checkTrophies(); } return; }
+    if (ev.target.closest('[data-warmtick]')) { const on = !(pr.warm === true || (pr.done && pr.warm !== false)); pr.warm = on; haptic(on ? 12 : 6); save(); render(); if (on) { Beep.unlock(); checkTrophies(); } return; }
     const z = ev.target.closest('[data-zoom]'); if (z) { openPhoto(w.exercises.find((e) => e.slug === z.dataset.zoom)); return; }
     const wb = ev.target.closest('[data-warm]'); if (wb) { const x = w.warmup[+wb.dataset.warm], t = timerOfWarm(x); Beep.unlock();
-      openTimer({ kind: 'warm', title: x.move, eyebrow: `Warm-up · ${x.detail}`, phases: warmPhases(x, t), autostart: true }); return; }
+      const wi = +wb.dataset.warm;
+      openTimer({ kind: 'warm', title: x.move, eyebrow: `Warm-up · ${x.detail}`, phases: warmPhases(x, t), autostart: true, onDone: () => {
+        WKS.bump('timers'); WKS.bump('warmTimers'); pr.wt = { ...(pr.wt || {}), [wi]: true };
+        const timed = (w.warmup || []).map((q, k) => (timerOfWarm(q) ? k : -1)).filter((k) => k >= 0);
+        if (pr.warm !== true && timed.every((k) => pr.wt[k])) { pr.warm = true; toast('Warm-up done ✓'); }
+        save(); if (app.isConnected && $('[data-warmtick]', app)) render(); checkTrophies(); } }); return; }
     const xb = ev.target.closest('[data-ext]'); if (xb) { const e = w.exercises.find((q) => q.slug === xb.dataset.ext), t = timerOfEx(e), m = xb.dataset.mode; Beep.unlock();
       const tickEl = $(`.tick[data-tick="${CSS.escape(e.slug)}"]`, app);
       const phases = m === 'work' ? workPhases(t) : m === 'round' ? [{ label: 'Rest between rounds', seconds: t.roundRest, type: 'rest' }] : [{ label: t.roundRest ? 'Rest between moves' : 'Rest between sets', seconds: t.rest, type: 'rest' }];
       openTimer({ kind: 'ex', title: e.name, eyebrow: `Exercise ${e.order} · ${amount(e)}`, phases, mode: m, autostart: m !== 'work',
+        onDone: (type) => { WKS.bump('timers'); if (type === 'work') WKS.bump('timerSets'); checkTrophies(); },
         ex: { timer: t, name: e.name, onTickOff: () => { if (tickEl && tickEl.getAttribute('aria-checked') !== 'true') tickEl.click(); } } }); return; }
   };
   app.addEventListener('click', app._wkClick);
   $$('.ex', app).forEach((el) => el.classList.toggle('is-done', !!pr.ex[el.dataset.slug]));
   doneBtn.onclick = async () => {
     if (pr.done) { pr.done = false; pr.doneAt = null; save(); render(); toast('Marked as not done — your diary was left as is'); return; }
-    pr.done = true; pr.doneAt = new Date().toISOString(); w.exercises.forEach((e) => { pr.ex[e.slug] = true; });
+    pr.done = true; pr.doneAt = new Date().toISOString(); w.exercises.forEach((e) => { pr.ex[e.slug] = true; }); if (pr.warm === undefined) pr.warm = true; Beep.unlock();
     $$('.tick', app).forEach((t) => t.setAttribute('aria-checked', 'true')); $$('.ex', app).forEach((el) => el.classList.add('is-done'));
     save(); render(); haptic([20, 40, 30]); celebrate(doneBtn);
     const added = await logWorkoutToDiary(b, w);
     const finishedAll = b === BLOCKS[BLOCKS.length - 1] && blockDone(b, prog) === b.workouts.length;
     toast(finishedAll ? `Block ${b.block} complete! Logged in your diary` : added ? `Done! Added to your diary for ${fmt(parseKey(w.date), { day: 'numeric', month: 'short' })}` : 'Done! Already in your diary');
+    setTimeout(() => checkTrophies(), 900);
   };
 }
 
@@ -728,14 +749,16 @@ const Beep = {
     } catch (e) {}
   },
   cancel() { this.nodes.forEach((n) => { try { n.stop(); } catch (e) {} }); this.nodes = []; },
-  tone(at, f, dur, vol = .25) { const c = this.ctx, o = c.createOscillator(), g = c.createGain();
+  tone(at, f, dur, vol = .25, track = true) { const c = this.ctx, o = c.createOscillator(), g = c.createGain();
     o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(vol, at + .012); g.gain.exponentialRampToValueAtTime(.0008, at + dur);
-    o.connect(g).connect(c.destination); o.start(at); o.stop(at + dur + .02); this.nodes.push(o); return o; },
+    o.connect(g).connect(c.destination); o.start(at); o.stop(at + dur + .02); if (track) this.nodes.push(o); return o; },
   schedule(msFromNow, final) { // countdown pips at 3-2-1 + finish chime, on the audio clock
     if (!this.ctx) return; this.cancel(); const t0 = this.ctx.currentTime + Math.max(0, msFromNow) / 1000;
     [3, 2, 1].forEach((k) => { if (msFromNow / 1000 > k + .05) this.tone(t0 - k, 660, .09, .12); });
     if (final) { this.tone(t0, 880, .18); this.tone(t0 + .22, 880, .18); this.tone(t0 + .44, 1175, .42); } else this.tone(t0, 988, .3);
   },
+  fanfare() { if (!this.ctx) return; try { this.ctx.resume(); } catch (e) {} const t = this.ctx.currentTime + .06; // trophy chime
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => this.tone(t + i * .1, f, .45, .14, false)); this.tone(t + .42, 1318.5, 1, .11, false); this.tone(t + .42, 1568, 1.1, .06, false); },
   now(final) { if (!this.ctx) return; try { this.ctx.resume(); } catch (e) {} this.schedule(0, final); },
 };
 const Wake = {
@@ -801,6 +824,7 @@ function openTimer(opts) {
     flash();
     if (st.i < st.phases.length - 1) { st.i++; st.dur = st.phases[st.i].seconds; st.left = st.dur * 1000; startPhase(true); status.textContent = `${st.phases[st.i].label} — go`; return; }
     st.finished = true; Wake.off();
+    if (opts.onDone) try { opts.onDone(st.phases[st.i].type); } catch (e) {}
     if (navigator.vibrate) try { navigator.vibrate([180, 90, 180, 90, 320]); } catch (e) {}
     const ph = st.phases[st.i];
     if (totalSets > 1 && ph.type === 'rest' && st.set < totalSets) { st.set++; status.textContent = `Rest over — set ${st.set} of ${totalSets}`; }
@@ -841,11 +865,11 @@ function openTimer(opts) {
 function workPhases(tm) { return tm.sides > 1 ? [{ label: 'Side 1', seconds: tm.work, type: 'work' }, { label: 'Side 2', seconds: tm.work, type: 'work' }] : [{ label: 'Work', seconds: tm.work, type: 'work' }]; }
 function warmPhases(x, t) { return t.sides > 1 ? [{ label: 'Side 1', seconds: t.work, type: 'work' }, { label: 'Side 2', seconds: t.work, type: 'work' }] : [{ label: x.move, seconds: t.work, type: 'work' }]; }
 
-function celebrate(el) {
+function celebrate(el, n = 26, dist = 90) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const r = el.getBoundingClientRect(); const box = document.createElement('div'); box.className = 'confetti'; box.style.left = r.left + r.width / 2 + 'px'; box.style.top = r.top + 'px';
+  const r = el.getBoundingClientRect(); const box = document.createElement('div'); box.className = 'confetti'; box.style.left = r.left + r.width / 2 + 'px'; box.style.top = (r.top + (n > 26 ? r.height / 2 : 0)) + 'px';
   const cols = ['#FFD23F', '#FF6AD5', '#3FA9FF', '#16C79A', '#FF7A45', '#9B85FF'];
-  box.innerHTML = [...Array(26)].map((_, i) => `<i style="--a:${(i / 26) * 360}deg;--d:${60 + Math.random() * 90}px;--c:${cols[i % cols.length]};--r:${Math.random() * 720 - 360}deg"></i>`).join('');
+  box.innerHTML = [...Array(n)].map((_, i) => `<i style="--a:${(i / n) * 360}deg;--d:${60 + Math.random() * dist}px;--c:${cols[i % cols.length]};--r:${Math.random() * 720 - 360}deg"></i>`).join('');
   document.body.append(box); setTimeout(() => box.remove(), 1100);
 }
 
@@ -870,6 +894,225 @@ function openPhoto(e) {
   document.body.append(el); $('[data-close]', el).focus({ preventScroll: true });
 }
 
+/* ───────── Trophies ─────────
+   Computed from progress the app already keeps (diary.wkblocks) plus a few on-device counters (diary.wkstats: finished timers).
+   Unlocks are stored in diary.trophies as { <id>: <ISO date unlocked> } and never removed, so they survive new blocks and undo. */
+const WKS = {
+  get() { let s = null; try { s = JSON.parse(LS.get('wkstats', 'null')); } catch (e) {} return { timers: 0, timerSets: 0, warmTimers: 0, ...(s && typeof s === 'object' ? s : {}) }; },
+  bump(k, n = 1) { const s = WKS.get(); s[k] = (+s[k] || 0) + n; s.lastAt = new Date().toISOString(); LS.set('wkstats', JSON.stringify(s)); },
+};
+const TR = {
+  has() { return LS.get('trophies', null) !== null; },
+  get() { let o = null; try { o = JSON.parse(LS.get('trophies', 'null')); } catch (e) {} return o && typeof o === 'object' ? o : {}; },
+  save(o) { LS.set('trophies', JSON.stringify(o)); },
+};
+const londonAt = (iso) => { const d = new Date(iso); if (isNaN(d)) return null;
+  try { const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(d);
+    const v = (t) => p.find((x) => x.type === t).value; return { key: `${v('year')}-${v('month')}-${v('day')}`, hour: +v('hour') % 24 }; }
+  catch (e) { return { key: dayKey(d), hour: d.getHours() }; } };
+const setsOf = (e) => Math.max(...(String(e.sets).match(/\d+/g) || [1]).map(Number));
+const mondayOf = (k) => { const d = parseKey(k); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return dayKey(d); };
+const nextKey = (k) => { const d = parseKey(k); d.setDate(d.getDate() + 1); return dayKey(d); };
+
+function trophyFacts() {
+  const all = WK.all(), today = londonKey(), items = [];
+  BLOCKS.forEach((b) => { const p = all[b.id] || {};
+    b.workouts.slice().sort((x, y) => x.date.localeCompare(y.date) || x.day - y.day).forEach((w) => {
+      const pr = p[w.day] || { ex: {} }, done = !!pr.done, at = done ? (pr.doneAt || null) : null, l = at ? londonAt(at) : null;
+      items.push({ b, w, pr, done, at, key: l && l.key, hour: l ? l.hour : null, onDay: !!(l && l.key === w.date), late: !!(l && l.key > w.date),
+        warm: pr.warm === true || (done && pr.warm !== false), sets: w.exercises.reduce((n, e) => n + (pr.ex && pr.ex[e.slug] ? setsOf(e) : 0), 0) }); }); });
+  items.sort((x, y) => x.w.date.localeCompare(y.w.date));
+  const done = items.filter((x) => x.done).sort((x, y) => (x.at || '').localeCompare(y.at || ''));
+  const nth = (n) => (done[n - 1] || {}).at || null;
+  let run = 0, best = 0; for (const x of items) { if (x.done) best = Math.max(best, ++run); else if (x.w.date < today) run = 0; }
+  const weeks = {}; items.forEach((x) => (weeks[mondayOf(x.w.date)] ||= []).push(x));
+  const fullWeeks = Object.values(weeks).filter((l) => l.length >= 2 && l.every((x) => x.done));
+  const doneKeys = new Set(done.map((x) => x.key).filter(Boolean));
+  const weekend = [...doneKeys].some((k) => parseKey(k).getDay() === 6 && doneKeys.has(nextKey(k)));
+  const blocks = BLOCKS.map((b) => { const l = items.filter((x) => x.b === b); return { n: l.filter((x) => x.done).length, p: l.filter((x) => x.done && x.onDay).length, of: l.length,
+    done: l.length > 0 && l.every((x) => x.done), perfect: l.length > 0 && l.every((x) => x.done && x.onDay) }; });
+  const bestOf = (l, k) => l.reduce((m, x) => (x.of && x[k] / x.of > m[0] / m[1] ? [x[k], x.of] : m), [0, (l[0] && l[0].of) || 1]);
+  const wk = Object.values(weeks).filter((l) => l.length >= 2).map((l) => ({ n: l.filter((x) => x.done).length, w: l.filter((x) => x.done && x.warm).length, of: l.length }));
+  const s = WKS.get();
+  return { workouts: done.length, nth, streak: best, onDay: done.filter((x) => x.onDay).length, sets: items.reduce((n, x) => n + x.sets, 0),
+    warmDone: items.filter((x) => x.warm).length, early: done.some((x) => x.hour !== null && x.hour < 8), late: done.some((x) => x.hour !== null && x.hour >= 21),
+    fullWeek: fullWeeks.length, warmWeek: fullWeeks.filter((l) => l.every((x) => x.warm)).length, weekend,
+    themes: new Set(done.map((x) => String(x.w.theme).trim().toLowerCase())).size, blocksDone: blocks.filter((b) => b.done).length, perfect: blocks.some((b) => b.perfect),
+    comeback: done.some((x) => x.late), bestBlock: bestOf(blocks, 'n'), bestPerfect: bestOf(blocks, 'p'), bestWeek: bestOf(wk, 'n'), bestWarmWeek: bestOf(wk, 'w'), timers: +s.timers || 0, timerSets: +s.timerSets || 0, lastAt: done.length ? done[done.length - 1].at : null };
+}
+const yes = (v) => (v ? 1 : 0);
+/* tier: bronze | silver | gold | special · shape: cup | medal | star · glyph: icon name or text */
+const TROPHIES = [
+  { id: 'first-workout', tier: 'bronze', shape: 'cup', glyph: '1', title: 'First Step', desc: 'Finish your first workout.', target: 1, unit: 'workout', val: (f) => f.workouts, at: (f) => f.nth(1) },
+  { id: 'warmed-up', tier: 'bronze', shape: 'medal', glyph: 'sunrise', title: 'Warmed Up', desc: 'Tick off a warm-up before a workout.', target: 1, unit: 'warm-up', val: (f) => f.warmDone },
+  { id: 'first-timer', tier: 'bronze', shape: 'medal', glyph: 'clock', title: 'Clock Starter', desc: 'Run a workout timer all the way to zero.', target: 1, unit: 'timer', val: (f) => f.timers },
+  { id: 'streak-3', tier: 'bronze', shape: 'medal', glyph: 'flame', title: 'On a Roll', desc: 'Finish 3 planned workouts in a row.', target: 3, unit: 'in a row', val: (f) => f.streak },
+  { id: 'on-time-3', tier: 'bronze', shape: 'medal', glyph: 'cal', title: 'Right on Time', desc: 'Finish 3 workouts on their planned day.', target: 3, unit: 'on the day', val: (f) => f.onDay },
+  { id: 'sets-25', tier: 'bronze', shape: 'cup', glyph: 'stack', title: 'Quarter Century', desc: 'Complete 25 sets — every ticked exercise counts its sets.', target: 25, unit: 'sets', val: (f) => f.sets },
+  { id: 'early-bird', tier: 'bronze', shape: 'medal', glyph: 'sun', title: 'Early Bird', desc: 'Finish a workout before 8 am.', target: 1, unit: '', val: (f) => yes(f.early) },
+  { id: 'night-owl', tier: 'bronze', shape: 'medal', glyph: 'moon', title: 'Night Owl', desc: 'Finish a workout after 9 pm.', target: 1, unit: '', val: (f) => yes(f.late) },
+  { id: 'workouts-10', tier: 'silver', shape: 'cup', glyph: '10', title: 'Ten Strong', desc: 'Finish 10 workouts.', target: 10, unit: 'workouts', val: (f) => f.workouts, at: (f) => f.nth(10) },
+  { id: 'full-week', tier: 'silver', shape: 'medal', glyph: 'cal', title: 'Full Week', desc: 'Finish every workout planned in one week (Monday–Sunday).', target: 1, unit: 'week', val: (f) => f.fullWeek, prog: (f) => f.bestWeek, punit: 'workouts this week' },
+  { id: 'warmup-week', tier: 'silver', shape: 'medal', glyph: 'sunrise', title: 'Never Skip Warm-up', desc: 'Warm up before every workout in a full week.', target: 1, unit: 'week', val: (f) => f.warmWeek, prog: (f) => f.bestWarmWeek, punit: 'warmed up this week' },
+  { id: 'weekend', tier: 'silver', shape: 'medal', glyph: 'bolt', title: 'Weekend Warrior', desc: 'Train on both the Saturday and the Sunday of one weekend.', target: 1, unit: '', val: (f) => yes(f.weekend) },
+  { id: 'streak-6', tier: 'silver', shape: 'medal', glyph: 'flame', title: 'Unstoppable', desc: 'Finish 6 planned workouts in a row.', target: 6, unit: 'in a row', val: (f) => f.streak },
+  { id: 'block-done', tier: 'silver', shape: 'cup', glyph: 'check', title: 'Block Finisher', desc: 'Finish every workout in a block.', target: 1, unit: 'block', val: (f) => f.blocksDone, prog: (f) => f.bestBlock, punit: 'workouts in your best block' },
+  { id: 'timers-25', tier: 'silver', shape: 'medal', glyph: 'clock', title: 'Timekeeper', desc: 'Finish 25 timers — warm-ups, work or rest.', target: 25, unit: 'timers', val: (f) => f.timers },
+  { id: 'all-rounder', tier: 'silver', shape: 'cup', glyph: 'grid', title: 'All-Rounder', desc: 'Finish 6 different kinds of workout.', target: 6, unit: 'kinds', val: (f) => f.themes },
+  { id: 'workouts-25', tier: 'gold', shape: 'cup', glyph: '25', title: 'Twenty-Five', desc: 'Finish 25 workouts.', target: 25, unit: 'workouts', val: (f) => f.workouts, at: (f) => f.nth(25) },
+  { id: 'workouts-50', tier: 'gold', shape: 'cup', glyph: '50', title: 'Fifty Club', desc: 'Finish 50 workouts.', target: 50, unit: 'workouts', val: (f) => f.workouts, at: (f) => f.nth(50) },
+  { id: 'streak-12', tier: 'gold', shape: 'medal', glyph: 'flame', title: 'Iron Will', desc: 'Finish 12 planned workouts in a row.', target: 12, unit: 'in a row', val: (f) => f.streak },
+  { id: 'perfect-block', tier: 'gold', shape: 'cup', glyph: 'crown', title: 'Perfect Block', desc: 'Finish every workout in a block, each one on its planned day.', target: 1, unit: '', val: (f) => yes(f.perfect), prog: (f) => f.bestPerfect, punit: 'on the day in your best block' },
+  { id: 'sets-100', tier: 'gold', shape: 'cup', glyph: '100', title: 'Century', desc: 'Complete 100 sets.', target: 100, unit: 'sets', val: (f) => f.sets },
+  { id: 'timed-sets-100', tier: 'gold', shape: 'medal', glyph: 'clock', title: 'Timed Hundred', desc: 'Time 100 sets with the work timer.', target: 100, unit: 'timed sets', val: (f) => f.timerSets },
+  { id: 'blocks-3', tier: 'gold', shape: 'cup', glyph: '3', title: 'Seasoned', desc: 'Finish 3 whole blocks.', target: 3, unit: 'blocks', val: (f) => f.blocksDone },
+  { id: 'comeback', tier: 'special', shape: 'star', glyph: 'back', title: 'Comeback Kid', desc: 'Catch up on a workout after its planned day — it still counts.', target: 1, unit: '', val: (f) => yes(f.comeback) },
+  { id: 'legend', tier: 'special', shape: 'star', glyph: 'crown', title: 'Legend', desc: 'Unlock 20 other trophies.', target: 20, unit: 'trophies', val: (f, got) => Object.keys(got).filter((k) => k !== 'legend' && TROPHIES.some((t) => t.id === k)).length },
+];
+const TIERS = { bronze: { name: 'Bronze', c: ['#FFD9B8', '#D98C52', '#8A4A20'], r: '#FF7A45' }, silver: { name: 'Silver', c: ['#FFFFFF', '#C8CFDC', '#727D92'], r: '#3FA9FF' },
+  gold: { name: 'Gold', c: ['#FFF3A6', '#F6C232', '#A86E05'], r: '#FF3D8B' }, special: { name: 'Special', c: ['#FFC4F1', '#A98BFF', '#3B6BFF'], r: '#16C79A' } };
+const TGLYPH = {
+  sunrise: '<path d="M3 18h18M6.5 18a5.5 5.5 0 0 1 11 0M12 5v3.5M4.6 9.6l2 2M19.4 9.6l-2 2"/>',
+  clock: '<circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.6 1.6M9.5 2.8h5"/>',
+  flame: '<path d="M12 21c-3.9 0-6.5-2.6-6.5-6.2 0-3.9 3.4-5.8 3.9-10.3 2.9 1.9 4.4 4.3 4.6 6.6.9-.6 1.5-1.6 1.7-2.7 1.8 1.7 2.8 3.9 2.8 6.4 0 3.6-2.6 6.2-6.5 6.2Z"/>',
+  cal: '<rect x="4.5" y="5.5" width="15" height="14" rx="2.5"/><path d="M4.5 10h15M9 3.5v4M15 3.5v4M9 14.5l2 2 4-4"/>',
+  stack: '<path d="M4 8.5 12 4.5l8 4-8 4-8-4ZM4 12.5l8 4 8-4M4 16.5l8 4 8-4"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
+  moon: '<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/>',
+  bolt: '<path d="M13 3 5.5 13.5H12L11 21l7.5-10.5H12L13 3Z"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  grid: '<rect x="4.5" y="4.5" width="6" height="6" rx="1.5"/><rect x="13.5" y="4.5" width="6" height="6" rx="1.5"/><rect x="4.5" y="13.5" width="6" height="6" rx="1.5"/><rect x="13.5" y="13.5" width="6" height="6" rx="1.5"/>',
+  crown: '<path d="M4 18h16M5 18 3.8 8.2l4.7 3.6L12 5.5l3.5 6.3 4.7-3.6L19 18"/>',
+  back: '<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.7"/><path d="M4 4v4.7h4.7M12 8v4l3 2"/>',
+};
+let trUid = 0;
+function trophyArt(t, locked) {
+  const u = 'tg' + (++trUid), [l, m, d] = TIERS[t.tier].c, rib = TIERS[t.tier].r;
+  const glyph = (cx, cy, s) => TGLYPH[t.glyph] ? `<g transform="translate(${cx - 12 * s} ${cy - 12 * s}) scale(${s})" fill="none" stroke="${d}" stroke-width="${2.4 / s * .9}" stroke-linecap="round" stroke-linejoin="round">${TGLYPH[t.glyph]}</g>`
+    : `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Bricolage, Jakarta, system-ui, sans-serif" font-weight="800" font-size="${t.glyph.length > 2 ? 9.5 : 13}" fill="${d}">${esc(t.glyph)}</text>`;
+  const defs = `<defs><linearGradient id="${u}a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${l}"/><stop offset=".55" stop-color="${m}"/><stop offset="1" stop-color="${d}"/></linearGradient>
+    <linearGradient id="${u}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${m}"/><stop offset="1" stop-color="${d}"/></linearGradient>
+    <radialGradient id="${u}c" cx=".35" cy=".3" r=".75"><stop offset="0" stop-color="${l}"/><stop offset=".6" stop-color="${m}"/><stop offset="1" stop-color="${d}"/></radialGradient></defs>`;
+  let body;
+  if (t.shape === 'cup') body = `<path d="M19 15h-5.5c0 7 3.5 11.5 9 12.5M45 15h5.5c0 7-3.5 11.5-9 12.5" fill="none" stroke="url(#${u}b)" stroke-width="3.6" stroke-linecap="round"/>
+      <path d="M18 9.5h28v9.5C46 28 40 35 32 35s-14-7-14-16V9.5Z" fill="url(#${u}a)"/><path d="M18 9.5h28" stroke="${l}" stroke-width="1.6" opacity=".9"/>
+      <path d="M28.5 35h7l1.2 8.5h-9.4z" fill="url(#${u}b)"/><rect x="21" y="43" width="22" height="6.5" rx="2.2" fill="url(#${u}a)"/><rect x="17" y="49.5" width="30" height="7" rx="2.4" fill="url(#${u}b)"/>
+      <rect x="25" y="51.6" width="14" height="2.6" rx="1.3" fill="${l}" opacity=".55"/>
+      <path d="M22.5 12.5c0 9 2.5 15 7 18.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".55"/>
+      <circle cx="32" cy="21" r="8" fill="${l}" opacity=".55"/>${glyph(32, 21, .55)}`;
+  else if (t.shape === 'medal') body = `<path d="M20 3h9l6 17h-9z" fill="${rib}"/><path d="M44 3h-9l-6 17h9z" fill="${rib}" opacity=".78"/><path d="M20 3h9l1.5 4.3h-9z" fill="#fff" opacity=".25"/>
+      <circle cx="32" cy="38" r="19" fill="url(#${u}c)"/><circle cx="32" cy="38" r="14" fill="none" stroke="${l}" stroke-width="1.6" opacity=".85"/><circle cx="32" cy="38" r="19" fill="none" stroke="${d}" stroke-width="1.2" opacity=".5"/>
+      <path d="M19.5 31a14 14 0 0 1 9-8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"/>${glyph(32, 38, .72)}`;
+  else { const pts = [...Array(16)].map((_, i) => { const a = (i / 16) * Math.PI * 2 - Math.PI / 2, r = i % 2 ? 21 : 27; return `${(32 + r * Math.cos(a)).toFixed(1)},${(33 + r * Math.sin(a)).toFixed(1)}`; }).join(' ');
+    body = `<polygon points="${pts}" fill="url(#${u}a)"/><circle cx="32" cy="33" r="16" fill="url(#${u}c)" stroke="${l}" stroke-width="1.6"/>
+      <path d="M21 27a12 12 0 0 1 8-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".65"/>${glyph(32, 33, .7)}`; }
+  return `<span class="tr-art tier-${t.tier}${locked ? ' is-locked' : ''}"><svg viewBox="0 0 64 64" aria-hidden="true">${defs}${body}</svg>${locked ? `<span class="tr-lock">${ICON.lock}</span>` : ''}</span>`;
+}
+function trophyList(f = trophyFacts(), got = TR.get()) {
+  return TROPHIES.map((t) => { const n = Math.min(t.target, t.val(f, got)), ok = !!got[t.id];
+    const d = t.prog && n < t.target ? t.prog(f) : [n, t.target]; return { t, n, ok, at: got[t.id] || null, d, r: ok ? 1 : d[0] / d[1] }; });
+}
+const trUnit = (x) => (x.t.prog && x.n < x.t.target ? `${x.d[0]} / ${x.d[1]} ${x.t.punit}` : x.t.unit ? `${x.n} / ${x.t.target} ${x.t.unit}` : x.n >= x.t.target ? 'Done' : 'Not yet');
+const trShort = (x) => (x.t.unit || x.t.prog ? `${x.d[0]}/${x.d[1]}` : 'Locked');
+
+/* Checks for new unlocks. quiet: seeding/import — no diary lines, one summary popup, and dates from the workouts themselves. */
+async function checkTrophies({ quiet = false } = {}) {
+  const first = !TR.has(), got = TR.get(), f = trophyFacts(), now = new Date().toISOString(), fresh = [];
+  const seed = quiet || first;
+  for (let pass = 0; pass < 2; pass++) TROPHIES.forEach((t) => { if (got[t.id] || t.val(f, got) < t.target) return;
+    got[t.id] = seed ? ((t.at && t.at(f)) || f.lastAt || now) : now; fresh.push(t); });
+  TR.save(got);
+  if (!fresh.length) return [];
+  const card = $('.tr-entry'); if (card) card.outerHTML = trophyEntryCard();
+  if (location.hash === '#/trophies' && !$('.tr-sheet')) viewTrophies($('#app'));
+  if (seed) showTrophyPop(fresh, true);
+  else { await logTrophiesToDiary(fresh); fresh.forEach((t) => showTrophyPop([t], false)); }
+  return fresh;
+}
+async function logTrophiesToDiary(list) {
+  const key = londonKey(); const existing = state.entries.filter((e) => e.date === key).sort((a, c) => a.createdAt.localeCompare(c.createdAt))[0];
+  const body0 = existing ? existing.body : ''; const add = list.map((t) => `🏆 Unlocked: ${t.title}`).filter((l) => !body0.split('\n').some((x) => x.trim() === l));
+  if (!add.length) return;
+  if (existing) await saveEntry({ ...existing, body: body0.trim() ? body0.replace(/\s+$/, '') + '\n\n' + add.join('\n') : add.join('\n') });
+  else await saveEntry({ id: uid(), date: key, title: '', body: add.join('\n'), mood: null, season: seasonForKey(key), createdAt: new Date().toISOString() });
+}
+
+const trQueue = []; let trShowing = false;
+function showTrophyPop(list, summary) { trQueue.push({ list, summary }); if (!trShowing) nextTrophyPop(); }
+function nextTrophyPop() {
+  const item = trQueue.shift(); if (!item) { trShowing = false; return; } trShowing = true;
+  const { list, summary } = item, t = list[0], tier = TIERS[t.tier];
+  const layer = document.createElement('div'); layer.className = 'tr-pop'; layer.setAttribute('role', 'dialog'); layer.setAttribute('aria-modal', 'true'); layer.setAttribute('aria-labelledby', 'trPopTitle');
+  const arts = summary ? list.slice().sort((a, b) => 'special gold silver bronze'.indexOf(a.tier) - 'special gold silver bronze'.indexOf(b.tier)).slice(0, 3) : [t];
+  layer.innerHTML = `<div class="scrim tr-scrim"></div>
+    <section class="tr-card glass tier-${summary ? arts[0].tier : t.tier}">
+      <div class="tr-rays" aria-hidden="true"></div>
+      <div class="tr-hero-art${arts.length > 1 ? ' is-fan' : ''}">${arts.map((x) => trophyArt(x)).join('')}</div>
+      <span class="eyebrow">${summary ? 'Your trophy cabinet' : `Trophy unlocked · ${tier.name}`}</span>
+      <h3 id="trPopTitle">${summary ? `You’ve already earned ${list.length} ${list.length === 1 ? 'trophy' : 'trophies'}` : esc(t.title)}</h3>
+      <p>${summary ? esc(`From the workouts you’ve done so far: ${list.slice(0, 4).map((x) => x.title).join(', ')}${list.length > 4 ? ` and ${list.length - 4} more` : ''}.`) : esc(t.desc)}</p>
+      <div class="tr-actions"><button class="btn btn-ghost" data-go>See cabinet</button><button class="btn btn-primary" data-ok>${summary ? 'Lovely' : 'Nice!'}</button></div>
+    </section>`;
+  document.body.append(layer);
+  const card = $('.tr-card', layer);
+  const close = (go) => { card.classList.add('out'); $('.tr-scrim', layer).style.opacity = '0'; document.removeEventListener('keydown', onKey);
+    setTimeout(() => { layer.remove(); if (go) { trQueue.length = 0; trShowing = false; if (location.hash !== '#/trophies') location.hash = '#/trophies'; } else nextTrophyPop(); }, 260); };
+  const onKey = (k) => { if (k.key === 'Escape') close(false); };
+  document.addEventListener('keydown', onKey);
+  layer.addEventListener('click', (ev) => { if (ev.target.closest('[data-go]')) close(true); else if (ev.target.closest('[data-ok]') || ev.target.classList.contains('tr-scrim')) close(false); });
+  Beep.fanfare(); if (!navigator.userActivation || navigator.userActivation.hasBeenActive) haptic([30, 60, 30, 60, 80]);
+  requestAnimationFrame(() => celebrate($('.tr-hero-art', card), 36, 140));
+  setTimeout(() => $('[data-ok]', card)?.focus({ preventScroll: true }), 80);
+}
+
+function viewTrophies(app) {
+  const got = TR.get(), list = trophyList(trophyFacts(), got), n = list.filter((x) => x.ok).length, pct = Math.round(n / list.length * 100);
+  const next = list.filter((x) => !x.ok && x.r > 0).sort((a, b) => b.r - a.r).slice(0, 2);
+  const tierCount = (id) => { const l = list.filter((x) => x.t.tier === id); return `<span class="tr-tc tier-${id}"><i></i><span><b>${l.filter((x) => x.ok).length}</b>/${l.length}</span></span>`; };
+  const tile = (x) => `<button class="tr-tile glass${x.ok ? ' is-ok' : ''}" data-tr="${x.t.id}" aria-label="${esc(x.t.title)}, ${x.ok ? 'unlocked' : 'locked'}">${trophyArt(x.t, !x.ok)}
+      <b>${esc(x.t.title)}</b>${x.ok ? `<small class="tr-date">${fmt(new Date(x.at), { day: 'numeric', month: 'short' })}</small>`
+      : `<span class="tr-mini"><i style="width:${x.r * 100}%"></i></span><small>${trShort(x)}</small>`}</button>`;
+  app.innerHTML = `<div class="view tr-view">
+    <div class="entry-top"><button class="icon-btn glass" data-act="back" aria-label="Back to workouts">${ICON.back}</button><span class="eyebrow">Workouts</span></div>
+    <h1 class="page-title">Trophies</h1>
+    <section class="tr-sum card glass">
+      <div class="ring tr-ring" style="--p:${pct}"><span><b>${n}</b>/${list.length}</span></div>
+      <div class="tr-sum-txt"><span class="eyebrow">Trophy cabinet</span><b>${n} of ${list.length} trophies</b>
+        <div class="tr-tcs">${['bronze', 'silver', 'gold', 'special'].map(tierCount).join('')}</div></div>
+    </section>
+    ${next.length ? `<h2 class="wk-section">Almost there</h2><div class="tr-next">${next.map((x) => `<button class="tr-row glass" data-tr="${x.t.id}">${trophyArt(x.t, true)}
+      <span class="tr-row-txt"><b>${esc(x.t.title)}</b><small>${esc(x.t.desc)}</small><span class="tr-bar"><i style="width:${x.r * 100}%"></i></span></span><em>${trShort(x)}</em></button>`).join('')}</div>` : ''}
+    ${['gold', 'silver', 'bronze', 'special'].map((id) => `<h2 class="wk-section tr-h tier-${id}"><i></i>${TIERS[id].name}</h2>
+      <div class="tr-grid">${list.filter((x) => x.t.tier === id).sort((a, b) => b.ok - a.ok).map(tile).join('')}</div>`).join('')}
+    <div class="privacy-note glass">${ICON.shield}<span>Trophies are worked out from your own workout ticks and timers and stay on this device. They’re included in backups.</span></div>
+  </div>`;
+  $('[data-act="back"]', app).onclick = () => { location.hash = '#/workouts'; };
+  $$('[data-tr]', app).forEach((b) => b.onclick = () => openTrophy(b.dataset.tr));
+}
+function openTrophy(id) {
+  const got = TR.get(), x = trophyList(trophyFacts(), got).find((y) => y.t.id === id); if (!x) return;
+  const t = x.t, left = t.target - x.n;
+  const layer = $('#layer'), scrim = document.createElement('div'); scrim.className = 'scrim';
+  const el = document.createElement('div'); el.className = `sheet glass tr-sheet tier-${t.tier}${x.ok ? ' is-ok' : ''}`; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', t.title);
+  el.innerHTML = `<div class="tr-sheet-art">${trophyArt(t, !x.ok)}</div>
+    <span class="eyebrow">${TIERS[t.tier].name} trophy</span><h3>${esc(t.title)}</h3><p>${esc(t.desc)}</p>
+    <div class="tr-prog"><span class="tr-bar big"><i style="width:${x.r * 100}%"></i></span><b>${esc(trUnit(x))}</b></div>
+    <div class="tr-status ${x.ok ? 'ok' : ''}">${x.ok ? `${WICON.check}Unlocked ${fmt(new Date(x.at), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`
+      : `${ICON.lock}${t.unit && !t.prog && left > 0 ? `${left} more ${left === 1 ? t.unit.replace(/ies$/, 'y').replace(/([^s])s$/, '$1') : t.unit} to go` : 'Locked — keep going'}`}</div>
+    <div class="actions"><button class="btn btn-block btn-ghost" data-close>Close</button></div>`;
+  const close = () => { el.classList.add('out'); scrim.style.opacity = '0'; scrim.style.transition = 'opacity .25s'; setTimeout(() => { el.remove(); scrim.remove(); }, 250); window.removeEventListener('hashchange', close); };
+  scrim.onclick = close; $('[data-close]', el).onclick = close; window.addEventListener('hashchange', close);
+  layer.append(scrim, el); setTimeout(() => $('[data-close]', el).focus({ preventScroll: true }), 50);
+}
+function trophyEntryCard() {
+  const got = TR.get(), list = trophyList(trophyFacts(), got), ok = list.filter((x) => x.ok).sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  const next = list.filter((x) => !x.ok).sort((a, b) => b.r - a.r)[0];
+  const arts = ok.length ? ok.slice(0, 3).map((x) => trophyArt(x.t)).join('') : trophyArt(TROPHIES[0], true);
+  return `<a class="tr-entry card glass" href="#/trophies"><span class="tr-entry-art${ok.length > 1 ? ' is-fan' : ''}">${arts}</span>
+    <span class="tr-entry-txt"><span class="eyebrow">Trophy cabinet</span><b>${ok.length} of ${list.length} trophies</b>
+      <small>${next ? `Next: ${esc(next.t.title)}${next.t.unit || next.t.prog ? ` · ${trShort(next)}` : ''}` : 'Every trophy unlocked — legend!'}</small></span>${ICON.chev}</a>`;
+}
+
 /* ───────── Router ───────── */
 const tabbar = $('#tabbar');
 function setTab(name) {
@@ -888,6 +1131,7 @@ async function route() {
   if (name === 'timeline') { setTab('timeline'); viewTimeline(app); }
   else if (name === 'settings') { setTab('settings'); viewSettings(app); }
   else if (name === 'workouts') { setTab('workouts'); $('.tab[data-tab="workouts"]', tabbar).classList.remove('has-new'); viewWorkouts(app, arg && decodeURIComponent(arg)); }
+  else if (name === 'trophies') { setTab('workouts'); viewTrophies(app); }
   else if (name === 'workout' && arg) { setTab('workout'); arg2 ? viewWorkout(app, decodeURIComponent(arg), decodeURIComponent(arg2)) : viewWorkout(app, firstBlock() && firstBlock().id, decodeURIComponent(arg)); }
   else if (name === 'entry' && arg) { setTab('entry'); await viewEntry(app, decodeURIComponent(arg)); }
   else { setTab('today'); viewToday(app); }
@@ -940,6 +1184,7 @@ function noteNewBlocks(updated) {
   if (state.locked) await showLock();
   route();
   noteNewBlocks(!!justUpdated);
+  if (!TR.has()) setTimeout(() => checkTrophies({ quiet: true }), 1200); // first run with trophies: unlock what's already earned
   setupUpdates();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 })();
