@@ -638,12 +638,14 @@ function viewWorkout(app, blockId, day) {
       <div class="wk-progress"><div class="wk-bar big"><i></i></div><span class="wk-count"></span></div>
     </div>
     <section class="card glass wk-block"><h2>${WICON.flame}Warm-up</h2>
-      <ol class="wk-steps">${(w.warmup || []).map((x) => `<li><b>${esc(x.move)}</b><span>${esc(x.detail)}</span></li>`).join('')}</ol></section>
+      <ol class="wk-steps">${(w.warmup || []).map((x, i) => { const t = timerOfWarm(x);
+        return `<li${t ? ' class="has-timer"' : ''}><b>${esc(x.move)}</b><span>${esc(x.detail)}</span>${t ? `<button class="t-btn" data-warm="${i}" aria-label="Start ${esc(x.move)} timer, ${t.sides > 1 ? '2 sides of ' : ''}${fmtT(t.work)}">${WICON.play}${t.sides > 1 ? '2×' : ''}${fmtT(t.work)}</button>` : ''}</li>`; }).join('')}</ol></section>
     <h2 class="wk-section">Exercises</h2>
     <div class="wk-ex-list">${w.exercises.map((e) => `<article class="ex card glass" data-slug="${esc(e.slug)}">
       <button class="ex-photo" data-zoom="${esc(e.slug)}" aria-label="Enlarge ${esc(e.name)} photo"><img src="${e.image}" alt="${esc(e.name)} — ${esc((e.formPoints || []).join(', '))}" loading="lazy" decoding="async" width="800" height="600"><span class="zoom-hint">${WICON.zoom}</span><span class="ex-num">${e.order}</span></button>
       <div class="ex-head"><div><h3>${esc(e.name)}</h3><div class="ex-amount">${esc(amount(e))}</div></div>
         <button class="tick" role="checkbox" aria-checked="${!!pr.ex[e.slug]}" aria-label="Done: ${esc(e.name)}" data-tick="${esc(e.slug)}">${WICON.check}</button></div>
+      ${(() => { const t = timerOfEx(e); return `<div class="ex-timers">${t.work ? `<button class="t-chip t-work" data-ext="${esc(e.slug)}" data-mode="work">${WICON.play}<span><b>${t.sides > 1 ? `2 × ${fmtT(t.work)}` : fmtT(t.work)}</b><small>${t.sides > 1 ? 'Each side' : 'Work timer'}</small></span></button>` : ''}${t.rest ? `<button class="t-chip t-rest" data-ext="${esc(e.slug)}" data-mode="rest">${TICON.rest}<span><b>${fmtT(t.rest)}</b><small>${t.restDefault ? 'Rest' : t.roundRest ? 'Rest after' : 'Rest'}</small></span></button>` : ''}${t.roundRest ? `<button class="t-chip t-round" data-ext="${esc(e.slug)}" data-mode="round">${TICON.timer}<span><b>${fmtT(t.roundRest)}</b><small>Round rest</small></span></button>` : ''}</div>`; })()}
       <p class="ex-tip">${esc(e.formTips)}</p>
       ${e.formPoints && e.formPoints.length ? `<ol class="ex-points">${e.formPoints.map((f) => `<li>${esc(f)}</li>`).join('')}</ol>` : ''}
       <div class="ex-easier"><span>Easier</span>${esc(e.easierOption)}</div>
@@ -661,12 +663,21 @@ function viewWorkout(app, blockId, day) {
     const pill = $('.entry-top .wk-pill', app), s2 = wkStatus(b, w, prog); pill.className = `wk-pill pill-${s2.id}`; pill.innerHTML = (s2.id === 'done' ? WICON.check : '') + esc(s2.label); };
   render();
   $('[data-act="back"]', app).onclick = () => { history.length > 1 ? history.back() : (location.hash = '#/workouts/' + b.id); };
-  app.addEventListener('click', (ev) => {
+  if (app._wkClick) app.removeEventListener('click', app._wkClick); // one handler per detail view (views reuse #app)
+  app._wkClick = (ev) => {
     const t = ev.target.closest('[data-tick]'); if (t) { const s = t.dataset.tick; pr.ex[s] = !pr.ex[s]; if (!pr.ex[s]) delete pr.ex[s];
       t.setAttribute('aria-checked', !!pr.ex[s]); t.closest('.ex').classList.toggle('is-done', !!pr.ex[s]); haptic(pr.ex[s] ? 12 : 6); save(); render();
       if (!pr.done && exDone(pr, w) === w.exercises.length) toast('All exercises ticked — mark the workout done?'); return; }
-    const z = ev.target.closest('[data-zoom]'); if (z) { openPhoto(w.exercises.find((e) => e.slug === z.dataset.zoom)); }
-  });
+    const z = ev.target.closest('[data-zoom]'); if (z) { openPhoto(w.exercises.find((e) => e.slug === z.dataset.zoom)); return; }
+    const wb = ev.target.closest('[data-warm]'); if (wb) { const x = w.warmup[+wb.dataset.warm], t = timerOfWarm(x); Beep.unlock();
+      openTimer({ kind: 'warm', title: x.move, eyebrow: `Warm-up · ${x.detail}`, phases: warmPhases(x, t), autostart: true }); return; }
+    const xb = ev.target.closest('[data-ext]'); if (xb) { const e = w.exercises.find((q) => q.slug === xb.dataset.ext), t = timerOfEx(e), m = xb.dataset.mode; Beep.unlock();
+      const tickEl = $(`.tick[data-tick="${CSS.escape(e.slug)}"]`, app);
+      const phases = m === 'work' ? workPhases(t) : m === 'round' ? [{ label: 'Rest between rounds', seconds: t.roundRest, type: 'rest' }] : [{ label: t.roundRest ? 'Rest between moves' : 'Rest between sets', seconds: t.rest, type: 'rest' }];
+      openTimer({ kind: 'ex', title: e.name, eyebrow: `Exercise ${e.order} · ${amount(e)}`, phases, mode: m, autostart: m !== 'work',
+        ex: { timer: t, name: e.name, onTickOff: () => { if (tickEl && tickEl.getAttribute('aria-checked') !== 'true') tickEl.click(); } } }); return; }
+  };
+  app.addEventListener('click', app._wkClick);
   $$('.ex', app).forEach((el) => el.classList.toggle('is-done', !!pr.ex[el.dataset.slug]));
   doneBtn.onclick = async () => {
     if (pr.done) { pr.done = false; pr.doneAt = null; save(); render(); toast('Marked as not done — your diary was left as is'); return; }
@@ -693,6 +704,142 @@ async function logWorkoutToDiary(b, w) {
   await saveEntry({ id: uid(), date: w.date, title: '', body: line, mood: null, season: seasonForKey(w.date), createdAt: new Date().toISOString() });
   return true;
 }
+
+/* ───────── Workout timers ─────────
+   Time is always computed from an end timestamp (Date.now), never by counting ticks, so a backgrounded tab stays accurate.
+   The finish beep is scheduled on the AudioContext clock (unlocked by the tap that starts the timer). */
+const fmtT = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const TSECS = (t) => { const m = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b)/i.exec(String(t || '')); return m ? Math.round(+m[1] * (/^m/i.test(m[2]) ? 60 : 1)) : null; };
+const timerOfWarm = (x) => x.timer !== undefined ? x.timer : (TSECS(x.detail) ? { work: TSECS(x.detail), sides: /\b(per|each)\s+(side|leg|arm|way|direction)\b/i.test(x.detail) ? 2 : 1 } : null);
+const timerOfEx = (e) => e.timer || { work: TSECS(e.time), sides: /\b(per|each)\s+(side|leg|arm)\b/i.test(e.time || '') ? 2 : 1, rest: TSECS(e.rest) || 60, restDefault: !TSECS(e.rest), roundRest: null, sets: Math.max(...(String(e.sets).match(/\d+/g) || [1]).map(Number)) };
+const TICON = {
+  timer: '<svg viewBox="0 0 24 24" class="wi"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 1.5M9.5 2.5h5M19 6l1.5-1.5"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" class="wi"><path d="M8 5.5v13M16 5.5v13"/></svg>',
+  reset: '<svg viewBox="0 0 24 24" class="wi"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9"/><path d="M4.5 4v5h5"/></svg>',
+  rest: '<svg viewBox="0 0 24 24" class="wi"><path d="M7 3.5h10M7 20.5h10M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5"/></svg>',
+};
+const Beep = {
+  ctx: null, nodes: [],
+  unlock() { // must run inside the tap handler
+    try { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      if (!this.ctx) this.ctx = new AC();
+      if (this.ctx.state !== 'running') this.ctx.resume();
+      const b = this.ctx.createBuffer(1, 1, 22050), s = this.ctx.createBufferSource(); s.buffer = b; s.connect(this.ctx.destination); s.start(0); // iOS unlock
+    } catch (e) {}
+  },
+  cancel() { this.nodes.forEach((n) => { try { n.stop(); } catch (e) {} }); this.nodes = []; },
+  tone(at, f, dur, vol = .25) { const c = this.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(vol, at + .012); g.gain.exponentialRampToValueAtTime(.0008, at + dur);
+    o.connect(g).connect(c.destination); o.start(at); o.stop(at + dur + .02); this.nodes.push(o); return o; },
+  schedule(msFromNow, final) { // countdown pips at 3-2-1 + finish chime, on the audio clock
+    if (!this.ctx) return; this.cancel(); const t0 = this.ctx.currentTime + Math.max(0, msFromNow) / 1000;
+    [3, 2, 1].forEach((k) => { if (msFromNow / 1000 > k + .05) this.tone(t0 - k, 660, .09, .12); });
+    if (final) { this.tone(t0, 880, .18); this.tone(t0 + .22, 880, .18); this.tone(t0 + .44, 1175, .42); } else this.tone(t0, 988, .3);
+  },
+  now(final) { if (!this.ctx) return; try { this.ctx.resume(); } catch (e) {} this.schedule(0, final); },
+};
+const Wake = {
+  lock: null,
+  async on() { try { if ('wakeLock' in navigator && !this.lock && document.visibilityState === 'visible') { this.lock = await navigator.wakeLock.request('screen'); this.lock.addEventListener('release', () => { this.lock = null; }); } } catch (e) { this.lock = null; } },
+  off() { try { this.lock && this.lock.release(); } catch (e) {} this.lock = null; },
+};
+
+/* opts: { kind:'warm'|'ex', title, eyebrow, phases:[{label,seconds,type}], ex?:{timer, name, onTickOff} } */
+function openTimer(opts) {
+  $$('.timer-layer').forEach((x) => x.remove());
+  const layer = document.createElement('div'); layer.className = 'timer-layer';
+  const tm = opts.ex ? opts.ex.timer : null; const totalSets = tm ? tm.sets : 0;
+  const st = { phases: opts.phases, i: 0, dur: opts.phases[0].seconds, endAt: 0, left: opts.phases[0].seconds * 1000, running: false, finished: false, set: 1, late: false };
+  const modes = tm ? [tm.work && { id: 'work', label: tm.sides > 1 ? `Work ${tm.sides}×${fmtT(tm.work)}` : `Work ${fmtT(tm.work)}`, phases: workPhases(tm) },
+    tm.rest && { id: 'rest', label: `Rest ${fmtT(tm.rest)}`, phases: [{ label: tm.restDefault ? 'Rest between sets' : (tm.roundRest ? 'Rest between moves' : 'Rest between sets'), seconds: tm.rest, type: 'rest' }] },
+    tm.roundRest && { id: 'round', label: `Round rest ${fmtT(tm.roundRest)}`, phases: [{ label: 'Rest between rounds', seconds: tm.roundRest, type: 'rest' }] }].filter(Boolean) : [];
+  let mode = opts.mode || (modes[0] && modes[0].id);
+  const R = 118, C = 2 * Math.PI * R;
+  layer.innerHTML = `<div class="scrim timer-scrim"></div>
+    <section class="timer glass" role="dialog" aria-modal="true" aria-label="${esc(opts.title)} timer">
+      <div class="timer-top"><div><span class="eyebrow">${esc(opts.eyebrow)}</span><h3>${esc(opts.title)}</h3></div>
+        <button class="icon-btn glass" data-t="close" aria-label="Close timer">${ICON.x}</button></div>
+      ${modes.length > 1 ? `<div class="timer-modes" role="radiogroup" aria-label="Timer type">${modes.map((m) => `<button role="radio" data-mode="${m.id}">${esc(m.label)}</button>`).join('')}</div>` : ''}
+      <div class="timer-dial">
+        <svg viewBox="0 0 260 260" aria-hidden="true"><circle class="trk" cx="130" cy="130" r="${R}"/><circle class="prg" cx="130" cy="130" r="${R}" stroke-dasharray="${C}" stroke-dashoffset="0"/></svg>
+        <div class="timer-read"><span class="timer-phase"></span><b class="timer-digits" aria-live="off">0:00</b><span class="timer-sub"></span></div>
+      </div>
+      ${totalSets > 1 ? `<div class="timer-sets"><button class="ts-btn" data-t="set-" aria-label="Previous set">−</button>
+        <div class="ts-mid"><span class="ts-dots">${Array.from({ length: totalSets }, () => '<i></i>').join('')}</span><span class="ts-label"></span></div>
+        <button class="ts-btn" data-t="set+" aria-label="Next set">+</button></div>` : ''}
+      <div class="timer-ctl">
+        <button class="tc-small glass" data-t="minus" aria-label="Minus 15 seconds">−15s</button>
+        <button class="tc-main" data-t="toggle" aria-label="Start"></button>
+        <button class="tc-small glass" data-t="plus" aria-label="Plus 15 seconds">+15s</button>
+      </div>
+      <div class="timer-foot"><button class="tc-link" data-t="reset">${TICON.reset}Reset</button><span class="timer-status" role="status" aria-live="polite"></span>
+        ${opts.ex ? '<button class="tc-link" data-t="tickoff" hidden>' + WICON.check + 'Tick off</button>' : ''}</div>
+    </section>`;
+  document.body.append(layer); document.documentElement.classList.add('timer-open');
+  const el = $('.timer', layer), digits = $('.timer-digits', el), prg = $('.prg', el), phaseEl = $('.timer-phase', el), sub = $('.timer-sub', el), status = $('.timer-status', el);
+  const toggleBtn = $('[data-t="toggle"]', el);
+  const remaining = () => (st.running ? st.endAt - Date.now() : st.left);
+  const paint = () => {
+    const ms = Math.max(0, remaining()), ph = st.phases[st.i];
+    digits.textContent = fmtT(ms / 1000); prg.style.strokeDashoffset = String(C * (1 - ms / (st.dur * 1000 || 1)));
+    phaseEl.textContent = st.finished ? 'Time!' : ph.label; sub.textContent = st.phases.length > 1 ? `${st.i + 1} of ${st.phases.length}` : (st.running ? '' : st.finished ? '' : 'Ready');
+    el.dataset.type = ph.type; el.classList.toggle('is-running', st.running); el.classList.toggle('is-done', st.finished);
+    toggleBtn.innerHTML = st.running ? TICON.pause : WICON.play; toggleBtn.setAttribute('aria-label', st.running ? 'Pause' : st.finished ? 'Start again' : 'Start');
+    if (totalSets > 1) { $$('.ts-dots i', el).forEach((d, k) => { d.classList.toggle('on', k < st.set - 1 || (k === st.set - 1 && st.finished && ph.type === 'work')); d.classList.toggle('cur', k === st.set - 1); });
+      $('.ts-label', el).textContent = `Set ${st.set} of ${totalSets}`; }
+    $$('[data-mode]', el).forEach((b) => b.setAttribute('aria-checked', b.dataset.mode === mode));
+    const tk = $('[data-t="tickoff"]', el); if (tk) tk.hidden = !(st.set >= totalSets && st.finished);
+  };
+  let raf = 0, iv = 0;
+  const loop = () => { cancelAnimationFrame(raf); if (!st.running) return; check(); paint(); raf = requestAnimationFrame(loop); };
+  const check = () => { if (st.running && remaining() <= 0) phaseEnd(); };
+  const startPhase = (resetLeft) => { if (resetLeft) st.left = st.dur * 1000; st.endAt = Date.now() + st.left; st.running = true; st.finished = false;
+    Beep.schedule(st.left, st.i === st.phases.length - 1); Wake.on(); loop(); };
+  function phaseEnd() {
+    const lateBy = Date.now() - st.endAt; st.running = false; st.left = 0;
+    if (lateBy > 1500) Beep.now(st.i === st.phases.length - 1); // we were in the background: the scheduled beep may have been suspended
+    flash();
+    if (st.i < st.phases.length - 1) { st.i++; st.dur = st.phases[st.i].seconds; st.left = st.dur * 1000; startPhase(true); status.textContent = `${st.phases[st.i].label} — go`; return; }
+    st.finished = true; Wake.off();
+    if (navigator.vibrate) try { navigator.vibrate([180, 90, 180, 90, 320]); } catch (e) {}
+    const ph = st.phases[st.i];
+    if (totalSets > 1 && ph.type === 'rest' && st.set < totalSets) { st.set++; status.textContent = `Rest over — set ${st.set} of ${totalSets}`; }
+    else if (totalSets > 1 && ph.type === 'work') status.textContent = st.set < totalSets ? 'Nice! Take your rest' : `All ${totalSets} sets done`;
+    else status.textContent = 'Time’s up';
+    if (totalSets > 1 && ph.type === 'work' && st.set < totalSets && modes.some((m) => m.id === 'rest')) setTimeout(() => { if (layer.isConnected && st.finished) { setMode('rest'); status.textContent = 'Rest ready — tap play'; } }, 1400);
+    paint();
+  }
+  function flash() { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); haptic(40); }
+  function setMode(id) { const m = modes.find((x) => x.id === id); if (!m) return; mode = id; Beep.cancel(); st.running = false; st.phases = m.phases; st.i = 0; st.dur = m.phases[0].seconds; st.left = st.dur * 1000; st.finished = false; Wake.off(); paint(); }
+  const close = () => { st.running = false; Beep.cancel(); Wake.off(); cancelAnimationFrame(raf); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); document.removeEventListener('keydown', onKey);
+    el.classList.add('out'); $('.timer-scrim', layer).style.opacity = '0'; document.documentElement.classList.remove('timer-open'); setTimeout(() => layer.remove(), 240); };
+  const onVis = () => { if (document.visibilityState === 'visible') { if (st.running) { Wake.on(); check(); loop(); } paint(); } };
+  const onKey = (k) => { if (k.key === 'Escape') close(); else if (k.key === ' ' && k.target === document.body) { k.preventDefault(); toggleBtn.click(); } };
+  document.addEventListener('visibilitychange', onVis); document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close, { once: true });
+  iv = setInterval(() => { check(); if (st.running) paint(); }, 250); // backup when rAF is throttled
+  el.addEventListener('click', (ev) => {
+    const mb = ev.target.closest('[data-mode]'); if (mb) { setMode(mb.dataset.mode); return; }
+    const b = ev.target.closest('[data-t]'); if (!b) return; const t = b.dataset.t;
+    if (t === 'close') return close();
+    if (t === 'toggle') { Beep.unlock();
+      if (st.running) { st.left = remaining(); st.running = false; Beep.cancel(); Wake.off(); status.textContent = 'Paused'; }
+      else { if (st.finished) { st.i = 0; st.dur = st.phases[0].seconds; st.left = st.dur * 1000; } status.textContent = ''; startPhase(st.left <= 0); }
+      haptic(10); paint(); return; }
+    if (t === 'reset') { Beep.cancel(); st.running = false; st.i = 0; st.dur = st.phases[0].seconds; st.left = st.dur * 1000; st.finished = false; Wake.off(); status.textContent = ''; paint(); return; }
+    if (t === 'plus' || t === 'minus') { const d = t === 'plus' ? 15000 : -15000;
+      if (st.finished) { st.finished = false; st.left = 0; }
+      const left = Math.max(st.running ? 1000 : 5000, remaining() + d); if (st.running) { st.endAt = Date.now() + left; Beep.schedule(left, st.i === st.phases.length - 1); } else st.left = left;
+      st.dur = Math.max(st.dur, Math.ceil(left / 1000)); paint(); return; }
+    if (t === 'set+' || t === 'set-') { st.set = Math.min(totalSets, Math.max(1, st.set + (t === 'set+' ? 1 : -1))); paint(); return; }
+    if (t === 'tickoff' && opts.ex && opts.ex.onTickOff) { opts.ex.onTickOff(); close(); }
+  });
+  $('.timer-scrim', layer).onclick = () => { if (!st.running) close(); };
+  paint(); setTimeout(() => toggleBtn.focus({ preventScroll: true }), 60);
+  if (opts.autostart) { Beep.unlock(); startPhase(true); paint(); }
+  return { el, close };
+}
+function workPhases(tm) { return tm.sides > 1 ? [{ label: 'Side 1', seconds: tm.work, type: 'work' }, { label: 'Side 2', seconds: tm.work, type: 'work' }] : [{ label: 'Work', seconds: tm.work, type: 'work' }]; }
+function warmPhases(x, t) { return t.sides > 1 ? [{ label: 'Side 1', seconds: t.work, type: 'work' }, { label: 'Side 2', seconds: t.work, type: 'work' }] : [{ label: x.move, seconds: t.work, type: 'work' }]; }
 
 function celebrate(el) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -734,7 +881,8 @@ function setTab(name) {
 async function route() {
   if (current.flush) { const f = current.flush; current = { flush: null }; await f(); }
   if (state.locked) return;
-  const app = $('#app'); const [, name, arg, arg2] = (location.hash || '#/today').split('/');
+  const app = $('#app'); if (app._wkClick) { app.removeEventListener('click', app._wkClick); app._wkClick = null; }
+  const [, name, arg, arg2] = (location.hash || '#/today').split('/');
   window.scrollTo(0, 0);
   if (name !== 'entry' && name !== 'today' && name) Scene.stop();
   if (name === 'timeline') { setTab('timeline'); viewTimeline(app); }
