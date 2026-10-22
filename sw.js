@@ -1,7 +1,7 @@
 /* Life of Me service worker. CACHE/BUILD are bumped by tools/build-workouts.py */
 importScripts('workouts-data.js');
-const BUILD = 'f69a42649099';
-const CACHE = 'life-of-me-v13';
+const BUILD = '7eda0676bf2f';
+const CACHE = 'life-of-me-v14';
 const BLOCKS = self.WORKOUT_BLOCKS || [];
 // Precache photos of the two newest blocks; older blocks are cached the first time they are viewed.
 const WK_IMAGES = BLOCKS.slice(-2).flatMap((b) => b.workouts.flatMap((w) => w.exercises.flatMap((e) => ['./' + e.image, './' + e.full])));
