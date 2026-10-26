@@ -1,10 +1,10 @@
 /* Life of Me service worker. CACHE/BUILD are bumped by tools/build-workouts.py */
 importScripts('workouts-data.js');
-const BUILD = '4fdcf00d336a';
-const CACHE = 'life-of-me-v19';
+const BUILD = '4815a6a56eed';
+const CACHE = 'life-of-me-v20';
 const BLOCKS = self.WORKOUT_BLOCKS || [];
 // Precache photos of the two newest blocks; older blocks are cached the first time they are viewed.
-const WK_IMAGES = BLOCKS.slice(-2).flatMap((b) => b.workouts.flatMap((w) => w.exercises.flatMap((e) => ['./' + e.image, './' + e.full])));
+const WK_IMAGES = BLOCKS.slice(-2).flatMap((b) => b.workouts.flatMap((w) => [...w.exercises, ...(w.warmup || []), ...(w.stretches || [])].filter((e) => e.image).flatMap((e) => ['./' + e.image, './' + e.full])));
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './scene.js', './workouts-data.js', './manifest.webmanifest',
   './fonts/jakarta.woff2', './fonts/bricolage.woff2',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/icon-maskable-512.png',

@@ -636,79 +636,166 @@ function comingSoonCard(b, prog) {
   return `<section class="wk-soon card glass"><span class="wk-soon-icon">${WICON.spark}</span><div><span class="eyebrow">Next block coming soon</span><h3>${esc(head)}</h3><p>${esc(sub)}</p></div></section>`;
 }
 
+/* ───────── Workout detail: three sections — Warm-up · Exercises · Stretches ─────────
+   Warm-up moves and stretches come from the plan (built by tools/build-workouts.py) with their own picture, steps and common mistakes.
+   One "Start workout" button runs the guided player (openSession) through all three sections. */
+const fmtDur = (s) => (s >= 60 && s % 60 === 0 ? `${s / 60} min` : s > 60 ? `${Math.floor(s / 60)} min ${s % 60} sec` : `${s} sec`);
+const moveAmount = (x) => (x.seconds ? (x.sides > 1 ? `${fmtDur(x.seconds)} per ${x.sideWord || 'side'}` : fmtDur(x.seconds)) : (x.reps || x.detail || ''));
+const SECS = { warmup: { id: 'warm', label: 'Warm-up', icon: 'flame' }, exercise: { id: 'ex', label: 'Exercises', icon: 'dumbbell' }, stretch: { id: 'str', label: 'Stretches', icon: 'leafy' } };
+const WKSESSION = {
+  get(b, w) { let s = null; try { s = JSON.parse(LS.get('wksession', 'null')); } catch (e) {}
+    return s && s.bid === b.id && s.day === w.day && Date.now() - (+s.at || 0) < 4 * 3600e3 ? s : null; },
+  set(s) { LS.set('wksession', s ? JSON.stringify(s) : null); },
+};
+
+/* Every step of the session in order. A per-side timed move becomes two steps (side 1, side 2) with a short switch between. */
+function buildSession(w) {
+  const S = { circuit: true, rounds: 3, minRounds: 3, moveRest: 30, roundRest: 90, switch: 5, transition: 30, ...(w.session || {}) };
+  const steps = [];
+  const sw = { s: S.switch || 5, kind: 'switch' };
+  const addMove = (x, sec, rest) => { const n = x.seconds && x.sides > 1 ? x.sides : 1;
+    for (let s = 1; s <= n; s++) steps.push({ sec, item: x, name: x.name, image: x.image, seconds: x.seconds || 0, reps: x.seconds ? null : (x.reps || x.detail || ''),
+      side: n > 1 ? s : 0, sides: n, sideWord: x.sideWord || 'side', rest: s < n ? sw : { s: rest, kind: 'rest' } }); };
+  const endSection = (kind) => { const l = steps[steps.length - 1]; if (l) l.rest = { s: S.transition || 30, kind }; };
+  (w.warmup || []).forEach((x) => addMove(x, 'warmup', x.rest != null ? x.rest : (w.warmupRestSeconds || 10)));
+  endSection('transition');
+  const ex = w.exercises || [];
+  const exStep = (e, k, set, sets, round) => { const t = timerOfEx(e), n = t.work && t.sides > 1 ? 2 : 1;
+    for (let s = 1; s <= n; s++) steps.push({ sec: 'exercise', item: e, ex: e, name: e.name, image: e.image, seconds: t.work || 0, reps: t.work ? null : (e.reps || ''),
+      side: n > 1 ? s : 0, sides: n, sideWord: /\bleg\b/i.test(e.time || '') ? 'leg' : 'side', set, sets, round, rest: s < n ? sw : null }); };
+  if (S.circuit) {
+    const R = S.rounds || 3;
+    for (let r = 1; r <= R; r++) ex.forEach((e, k) => { exStep(e, k, r, R, r);
+      steps[steps.length - 1].rest = k < ex.length - 1 ? { s: S.moveRest, kind: 'rest' } : r < R ? { s: S.roundRest, kind: 'round', canFinish: r >= (S.minRounds || R), round: r } : null; });
+  } else ex.forEach((e, k) => { const t = timerOfEx(e), n = t.sets || 1;
+    for (let s = 1; s <= n; s++) { exStep(e, k, s, n, 0); steps[steps.length - 1].rest = s < n ? { s: t.rest || 60, kind: 'rest' } : k < ex.length - 1 ? { s: S.moveRest || 60, kind: 'rest' } : null; } });
+  if (ex.length) endSection('transition');
+  (w.stretches || []).forEach((x) => addMove(x, 'stretch', x.rest != null ? x.rest : (w.stretchRestSeconds || 10)));
+  const last = steps[steps.length - 1]; if (last) last.rest = null;
+  steps.forEach((s, k) => { s.n = k; });
+  const est = steps.reduce((m, s) => m + (s.seconds || (s.sec === 'exercise' ? 40 : 30)) + (s.rest ? s.rest.s : 0), 0) + 5;
+  return { steps, S, est };
+}
+
+function moveCard(x, k, sec) {
+  return `<button class="mv glass" data-howto="${sec}:${k}" aria-label="How to do ${esc(x.name)}">
+      <span class="mv-img">${x.image ? `<img src="${x.image}" alt="" loading="lazy" decoding="async" width="800" height="600">` : WICON[SECS[sec === 'w' ? 'warmup' : 'stretch'].icon]}<em>${k + 1}</em></span>
+      <span class="mv-txt"><b>${esc(x.name)}</b><small>${esc(moveAmount(x))}</small></span>
+      <span class="mv-go">How to${ICON.chevron || '<svg viewBox="0 0 24 24" class="wi"><path d="m9 6 6 6-6 6"/></svg>'}</span></button>`;
+}
+
 function viewWorkout(app, blockId, day) {
   const b = blockById(blockId); const w = wkByDay(b, day); if (!w) { location.hash = '#/workouts'; return; }
   const prog = WK.load(b); const pr = WK.of(prog, w.day); const d = parseKey(w.date); const st = wkStatus(b, w, prog);
   const save = () => WK.save(b, prog);
+  const warm = w.warmup || [], str = w.stretches || [];
+  const ses = buildSession(w); const resume = WKSESSION.get(b, w);
+  const S = ses.S;
+  const restLine = S.circuit ? `${S.rounds} rounds · ${S.moveRest} sec between moves · ${fmtDur(S.roundRest)} between rounds${S.minRounds < S.rounds ? ` · ${S.minRounds} rounds is fine too` : ''}` : esc(w.rest);
   app.innerHTML = `<div class="view wk-detail" style="${wkStyle(w)}">
     <div class="entry-top"><button class="icon-btn glass" data-act="back" aria-label="Back">${ICON.back}</button><span class="wk-pill pill-${st.id}">${st.id === 'done' ? WICON.check : ''}${esc(st.label)}</span></div>
     <div class="wk-hero"><div class="eyebrow">${BLOCKS.length > 1 ? `Block ${b.block} · ` : ''}Workout ${w.day} · ${fmt(d, { weekday: 'long', day: 'numeric', month: 'long' })}</div>
       <h1 class="h-display"><span>${esc(w.theme)}</span></h1>
       <div class="stats"><span class="chip glass">${WICON.clock}${esc(w.duration)}</span><span class="chip glass">${WICON.loop}${esc(w.format)}</span></div>
-      <p class="wk-rest">Rest: ${esc(w.rest)}</p>
       <div class="wk-progress"><div class="wk-bar big"><i></i></div><span class="wk-count"></span></div>
     </div>
-    <section class="card glass wk-block wk-warm"><h2>${WICON.flame}Warm-up<button class="tick warm-tick" role="checkbox" aria-checked="false" aria-label="Warm-up done" data-warmtick>${WICON.check}</button></h2>
-      <ol class="wk-steps">${(w.warmup || []).map((x, i) => { const t = timerOfWarm(x);
-        return `<li${t ? ' class="has-timer"' : ''}><b>${esc(x.move)}</b><span>${esc(x.detail)}</span>${t ? `<button class="t-btn" data-warm="${i}" aria-label="Start ${esc(x.move)} timer, ${t.sides > 1 ? '2 sides of ' : ''}${fmtT(t.work)}">${WICON.play}${t.sides > 1 ? '2×' : ''}${fmtT(t.work)}</button>` : ''}</li>`; }).join('')}</ol></section>
-    <h2 class="wk-section">Exercises</h2>
-    <div class="wk-ex-list">${w.exercises.map((e) => `<article class="ex card glass" data-slug="${esc(e.slug)}">
+    <section class="wk-start card glass">
+      <div class="ws-flow">${[['warmup', warm.length], ['exercise', w.exercises.length], ['stretch', str.length]].filter((x) => x[1]).map(([k, n]) => `<span class="ws-${SECS[k].id}">${WICON[SECS[k].icon]}<b>${n}</b>${SECS[k].label}</span>`).join('<i></i>')}</div>
+      <button class="btn btn-block btn-primary ws-go" data-act="start">${WICON.play}${resume ? `Resume · step ${resume.i + 1} of ${ses.steps.length}` : 'Start workout'}</button>
+      <p class="ws-sub">${resume ? '<button class="ws-over" data-act="restart">Start over instead</button>' : `${ses.steps.length} steps · about ${Math.max(5, Math.round(ses.est / 300) * 5)} min. Timers and rests run by themselves — you just move.`}</p>
+    </section>
+    <nav class="wk-seg glass" aria-label="Sections">${warm.length ? `<a href="#sec-warm" data-jump="sec-warm">Warm-up <b>${warm.length}</b></a>` : ''}<a href="#sec-ex" data-jump="sec-ex">Exercises <b>${w.exercises.length}</b></a>${str.length ? `<a href="#sec-str" data-jump="sec-str">Stretches <b>${str.length}</b></a>` : ''}</nav>
+    ${warm.length ? `<section class="wk-sec sec-warm" id="sec-warm">
+      <h2 class="wk-section">${WICON.flame}Warm-up<small>${warm.length} moves</small><button class="tick warm-tick" role="checkbox" aria-checked="false" aria-label="Warm-up done" data-warmtick>${WICON.check}</button></h2>
+      <div class="mv-list">${warm.map((x, k) => moveCard(x, k, 'w')).join('')}</div></section>` : ''}
+    <section class="wk-sec sec-ex" id="sec-ex">
+      <h2 class="wk-section">${WICON.dumbbell}Exercises<small>${w.exercises.length} moves</small></h2>
+      <p class="wk-rest">${restLine}</p>
+      <div class="wk-ex-list">${w.exercises.map((e) => `<article class="ex card glass" data-slug="${esc(e.slug)}">
       <button class="ex-photo" data-zoom="${esc(e.slug)}" aria-label="Enlarge ${esc(e.name)} photo"><img src="${e.image}" alt="${esc(e.name)} — ${esc((e.formPoints || []).join(', '))}" loading="lazy" decoding="async" width="800" height="600"><span class="zoom-hint">${WICON.zoom}</span><span class="ex-num">${e.order}</span></button>
       <div class="ex-head"><div><h3>${esc(e.name)}</h3><div class="ex-amount">${esc(amount(e))}</div></div>
         <button class="tick" role="checkbox" aria-checked="${!!pr.ex[e.slug]}" aria-label="Done: ${esc(e.name)}" data-tick="${esc(e.slug)}">${WICON.check}</button></div>
-      ${(() => { const t = timerOfEx(e); return `<div class="ex-timers">${t.work ? `<button class="t-chip t-work" data-ext="${esc(e.slug)}" data-mode="work">${WICON.play}<span><b>${t.sides > 1 ? `2 × ${fmtT(t.work)}` : fmtT(t.work)}</b><small>${t.sides > 1 ? 'Each side' : 'Work timer'}</small></span></button>` : ''}${t.rest ? `<button class="t-chip t-rest" data-ext="${esc(e.slug)}" data-mode="rest">${TICON.rest}<span><b>${fmtT(t.rest)}</b><small>${t.restDefault ? 'Rest' : t.roundRest ? 'Rest after' : 'Rest'}</small></span></button>` : ''}${t.roundRest ? `<button class="t-chip t-round" data-ext="${esc(e.slug)}" data-mode="round">${TICON.timer}<span><b>${fmtT(t.roundRest)}</b><small>Round rest</small></span></button>` : ''}</div>`; })()}
       <p class="ex-tip">${esc(e.formTips)}</p>
       ${e.formPoints && e.formPoints.length ? `<ol class="ex-points">${e.formPoints.map((f) => `<li>${esc(f)}</li>`).join('')}</ol>` : ''}
       <div class="ex-easier"><span>Easier</span>${esc(e.easierOption)}</div>
       <div class="ex-foot"><div class="ex-tags">${(e.muscleGroups || []).map((m) => `<span class="tag">${esc(m)}</span>`).join('')}</div>
         ${e.videoUrl ? `<a class="ex-video" href="${esc(e.videoUrl)}" target="_blank" rel="noopener noreferrer">${WICON.play}<span><b>Watch form video</b><small>${esc(e.videoChannel || 'YouTube')}</small></span></a>` : ''}</div>
-    </article>`).join('')}</div>
-    <section class="card glass wk-block"><h2>${WICON.leafy}Cool-down</h2><p class="wk-cool">${esc(w.cooldown)}</p></section>
+    </article>`).join('')}</div></section>
+    ${str.length ? `<section class="wk-sec sec-str" id="sec-str">
+      <h2 class="wk-section">${WICON.leafy}Stretches<small>${str.length} stretches</small></h2>
+      <p class="wk-rest">Slow and easy — breathe out as you ease in. Never stretch into pain.</p>
+      <div class="mv-list">${str.map((x, k) => moveCard(x, k, 's')).join('')}</div></section>`
+    : `<section class="card glass wk-block"><h2>${WICON.leafy}Cool-down</h2><p class="wk-cool">${esc(w.cooldown || '')}</p></section>`}
     <div class="wk-actions"><button class="btn btn-block wk-done-btn" data-act="done"></button></div>
   </div>`;
   const doneBtn = $('[data-act="done"]', app), bar = $('.wk-progress i', app), count = $('.wk-count', app);
   const render = () => { const n = exDone(pr, w);
     bar.style.width = (pr.done ? 100 : n / w.exercises.length * 100) + '%'; count.textContent = pr.done ? 'Workout complete' : `${n} of ${w.exercises.length} exercises`;
-    doneBtn.className = 'btn btn-block wk-done-btn ' + (pr.done ? 'btn-ghost' : 'btn-primary');
+    doneBtn.className = 'btn btn-block wk-done-btn ' + (pr.done ? 'btn-ghost' : 'btn-glass');
     doneBtn.innerHTML = pr.done ? `${WICON.check}Done — tap to undo` : `${WICON.check}Mark workout done`;
-    const wt = $('[data-warmtick]', app), wOn = pr.warm === true || (pr.done && pr.warm !== false); wt.setAttribute('aria-checked', wOn); wt.closest('.wk-warm').classList.toggle('is-done', wOn);
+    const wt = $('[data-warmtick]', app), wOn = pr.warm === true || (pr.done && pr.warm !== false); if (wt) { wt.setAttribute('aria-checked', wOn); wt.closest('.wk-sec').classList.toggle('is-done', wOn); }
+    $$('.ex', app).forEach((el) => { const on = !!pr.ex[el.dataset.slug]; el.classList.toggle('is-done', on); $('.tick', el).setAttribute('aria-checked', on); });
     const pill = $('.entry-top .wk-pill', app), s2 = wkStatus(b, w, prog); pill.className = `wk-pill pill-${s2.id}`; pill.innerHTML = (s2.id === 'done' ? WICON.check : '') + esc(s2.label); };
   render();
+  const reopen = () => { if (app.isConnected && location.hash.startsWith('#/workout/')) { const y = window.scrollY; viewWorkout(app, b.id, w.day); window.scrollTo(0, y); } };
+  const start = (from) => { Beep.unlock(); openSession({ b, w, prog, pr, save, from, onClose: reopen }); };
   $('[data-act="back"]', app).onclick = () => { history.length > 1 ? history.back() : (location.hash = '#/workouts/' + b.id); };
   if (app._wkClick) app.removeEventListener('click', app._wkClick); // one handler per detail view (views reuse #app)
   app._wkClick = (ev) => {
+    if (ev.target.closest('[data-act="start"]')) { start(resume || null); return; }
+    if (ev.target.closest('[data-act="restart"]')) { WKSESSION.set(null); start(null); return; }
+    const j = ev.target.closest('[data-jump]'); if (j) { ev.preventDefault(); const s = $('#' + j.dataset.jump, app);
+      if (s) window.scrollTo({ top: s.getBoundingClientRect().top + window.scrollY - 70, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); return; }
+    const h = ev.target.closest('[data-howto]'); if (h) { const [k, i] = h.dataset.howto.split(':'); openHowTo((k === 'w' ? warm : str)[+i], k === 'w' ? 'warmup' : 'stretch'); return; }
     const t = ev.target.closest('[data-tick]'); if (t) { const s = t.dataset.tick; pr.ex[s] = !pr.ex[s]; if (!pr.ex[s]) delete pr.ex[s];
-      t.setAttribute('aria-checked', !!pr.ex[s]); t.closest('.ex').classList.toggle('is-done', !!pr.ex[s]); haptic(pr.ex[s] ? 12 : 6); save(); render();
+      haptic(pr.ex[s] ? 12 : 6); save(); render();
       if (!pr.done && exDone(pr, w) === w.exercises.length) toast('All exercises ticked — mark the workout done?');
       if (pr.ex[s]) { Beep.unlock(); checkTrophies(); } return; }
     if (ev.target.closest('[data-warmtick]')) { const on = !(pr.warm === true || (pr.done && pr.warm !== false)); pr.warm = on; haptic(on ? 12 : 6); save(); render(); if (on) { Beep.unlock(); checkTrophies(); } return; }
     const z = ev.target.closest('[data-zoom]'); if (z) { openPhoto(w.exercises.find((e) => e.slug === z.dataset.zoom)); return; }
-    const wb = ev.target.closest('[data-warm]'); if (wb) { const x = w.warmup[+wb.dataset.warm], t = timerOfWarm(x); Beep.unlock();
-      const wi = +wb.dataset.warm;
-      openTimer({ kind: 'warm', title: x.move, eyebrow: `Warm-up · ${x.detail}`, phases: warmPhases(x, t), autostart: true, onDone: () => {
-        WKS.bump('timers'); WKS.bump('warmTimers'); pr.wt = { ...(pr.wt || {}), [wi]: true };
-        const timed = (w.warmup || []).map((q, k) => (timerOfWarm(q) ? k : -1)).filter((k) => k >= 0);
-        if (pr.warm !== true && timed.every((k) => pr.wt[k])) { pr.warm = true; toast('Warm-up done ✓'); }
-        save(); if (app.isConnected && $('[data-warmtick]', app)) render(); checkTrophies(); } }); return; }
-    const xb = ev.target.closest('[data-ext]'); if (xb) { const e = w.exercises.find((q) => q.slug === xb.dataset.ext), t = timerOfEx(e), m = xb.dataset.mode; Beep.unlock();
-      const tickEl = $(`.tick[data-tick="${CSS.escape(e.slug)}"]`, app);
-      const phases = m === 'work' ? workPhases(t) : m === 'round' ? [{ label: 'Rest between rounds', seconds: t.roundRest, type: 'rest' }] : [{ label: t.roundRest ? 'Rest between moves' : 'Rest between sets', seconds: t.rest, type: 'rest' }];
-      openTimer({ kind: 'ex', title: e.name, eyebrow: `Exercise ${e.order} · ${amount(e)}`, phases, mode: m, autostart: m !== 'work',
-        onDone: (type) => { WKS.bump('timers'); if (type === 'work') WKS.bump('timerSets'); checkTrophies(); },
-        ex: { timer: t, name: e.name, onTickOff: () => { if (tickEl && tickEl.getAttribute('aria-checked') !== 'true') tickEl.click(); } } }); return; }
   };
   app.addEventListener('click', app._wkClick);
-  $$('.ex', app).forEach((el) => el.classList.toggle('is-done', !!pr.ex[el.dataset.slug]));
   doneBtn.onclick = async () => {
     if (pr.done) { pr.done = false; pr.doneAt = null; save(); render(); toast('Marked as not done — your diary was left as is'); return; }
-    pr.done = true; pr.doneAt = new Date().toISOString(); w.exercises.forEach((e) => { pr.ex[e.slug] = true; }); if (pr.warm === undefined) pr.warm = true; Beep.unlock();
-    $$('.tick', app).forEach((t) => t.setAttribute('aria-checked', 'true')); $$('.ex', app).forEach((el) => el.classList.add('is-done'));
-    save(); render(); haptic([20, 40, 30]); celebrate(doneBtn);
-    const added = await logWorkoutToDiary(b, w);
-    const finishedAll = b === BLOCKS[BLOCKS.length - 1] && blockDone(b, prog) === b.workouts.length;
-    toast(finishedAll ? `Block ${b.block} complete! Logged in your diary` : added ? `Done! Added to your diary for ${fmt(parseKey(w.date), { day: 'numeric', month: 'short' })}` : 'Done! Already in your diary');
+    Beep.unlock(); render(); haptic([20, 40, 30]);
+    const msg = await markWorkoutDone(b, w, prog, pr); render(); celebrate(doneBtn); toast(msg);
     setTimeout(() => checkTrophies(), 900);
   };
+}
+
+/* Marks a workout done (all exercises ticked, warm-up ticked unless it was explicitly unticked) and writes the diary line. Returns the toast text. */
+async function markWorkoutDone(b, w, prog, pr) {
+  pr.done = true; pr.doneAt = new Date().toISOString(); w.exercises.forEach((e) => { pr.ex[e.slug] = true; }); if (pr.warm === undefined) pr.warm = true;
+  WK.save(b, prog);
+  const added = await logWorkoutToDiary(b, w);
+  const finishedAll = b === BLOCKS[BLOCKS.length - 1] && blockDone(b, prog) === b.workouts.length;
+  return finishedAll ? `Block ${b.block} complete! Logged in your diary` : added ? `Done! Added to your diary for ${fmt(parseKey(w.date), { day: 'numeric', month: 'short' })}` : 'Done! Already in your diary';
+}
+
+/* How-to sheet for a warm-up move or stretch: picture (tap to zoom), steps, common mistakes. */
+function openHowTo(x, kind) {
+  if (!x) return;
+  $$('.howto-layer').forEach((n) => n.remove());
+  const layer = document.createElement('div'); layer.className = 'howto-layer';
+  layer.innerHTML = `<div class="scrim"></div><section class="howto" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
+    <div class="howto-top"><div><span class="eyebrow">${kind === 'stretch' ? 'Stretch' : 'Warm-up'} · how to</span><h3 id="howtoTitle">${esc(x.name)}</h3></div>
+      <button class="icon-btn glass" data-close aria-label="Close">${ICON.x}</button></div>
+    <div class="howto-body">
+      ${x.image ? `<button class="howto-photo" data-zoom aria-label="Enlarge picture"><img src="${x.image}" alt="${esc(x.name)} — ${esc((x.cues || []).join(', '))}" width="800" height="600" decoding="async"><span class="zoom-hint">${WICON.zoom}</span></button>` : ''}
+      <div class="howto-amt"><span class="chip glass">${x.seconds ? WICON.clock : WICON.loop}${esc(moveAmount(x))}</span>${x.detail && x.detail !== moveAmount(x) ? `<small>${esc(x.detail)}</small>` : ''}</div>
+      ${(x.steps || []).length ? `<h4>How to do it</h4><ol class="howto-steps">${x.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
+      ${(x.mistakes || []).length ? `<h4>Common mistakes</h4><ul class="howto-miss">${x.mistakes.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
+      ${(x.cues || []).length ? `<h4>On the picture</h4><ol class="ex-points">${x.cues.map((f) => `<li>${esc(f)}</li>`).join('')}</ol>` : ''}
+      ${x.added ? `<p class="howto-note">${WICON.spark}Added to round off this session — it stretches the muscles you worked today.</p>` : ''}
+    </div></section>`;
+  const el = $('.howto', layer);
+  const close = () => { el.classList.add('out'); $('.scrim', layer).style.opacity = '0'; $('.scrim', layer).style.transition = 'opacity .25s'; setTimeout(() => layer.remove(), 240);
+    document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
+  const onKey = (k) => { if (k.key === 'Escape' && !$('.viewer')) close(); };
+  layer.addEventListener('click', (ev) => { if (ev.target.closest('[data-close]') || ev.target.classList.contains('scrim')) return close();
+    if (ev.target.closest('[data-zoom]')) openPhoto({ name: x.name, image: x.image, full: x.full, formPoints: x.cues }); });
+  document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close);
+  document.body.append(layer); $('[data-close]', el).focus({ preventScroll: true });
 }
 
 /* Block 1 keeps its original wording ("Workout 3 done: …") so lines written before blocks existed are still recognised. */
@@ -731,13 +818,14 @@ async function logWorkoutToDiary(b, w) {
    The finish beep is scheduled on the AudioContext clock (unlocked by the tap that starts the timer). */
 const fmtT = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const TSECS = (t) => { const m = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b)/i.exec(String(t || '')); return m ? Math.round(+m[1] * (/^m/i.test(m[2]) ? 60 : 1)) : null; };
-const timerOfWarm = (x) => x.timer !== undefined ? x.timer : (TSECS(x.detail) ? { work: TSECS(x.detail), sides: /\b(per|each)\s+(side|leg|arm|way|direction)\b/i.test(x.detail) ? 2 : 1 } : null);
 const timerOfEx = (e) => e.timer || { work: TSECS(e.time), sides: /\b(per|each)\s+(side|leg|arm)\b/i.test(e.time || '') ? 2 : 1, rest: TSECS(e.rest) || 60, restDefault: !TSECS(e.rest), roundRest: null, sets: Math.max(...(String(e.sets).match(/\d+/g) || [1]).map(Number)) };
 const TICON = {
   timer: '<svg viewBox="0 0 24 24" class="wi"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 1.5M9.5 2.5h5M19 6l1.5-1.5"/></svg>',
   pause: '<svg viewBox="0 0 24 24" class="wi"><path d="M8 5.5v13M16 5.5v13"/></svg>',
   reset: '<svg viewBox="0 0 24 24" class="wi"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9"/><path d="M4.5 4v5h5"/></svg>',
   rest: '<svg viewBox="0 0 24 24" class="wi"><path d="M7 3.5h10M7 20.5h10M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5"/></svg>',
+  back: '<svg viewBox="0 0 24 24" class="wi"><path d="M18 6v12L9.5 12 18 6Z"/><path d="M6 6v12"/></svg>',
+  skip: '<svg viewBox="0 0 24 24" class="wi"><path d="M6 6v12l8.5-6L6 6Z"/><path d="M18 6v12"/></svg>',
 };
 const Beep = {
   ctx: null, nodes: [],
@@ -767,103 +855,208 @@ const Wake = {
   off() { try { this.lock && this.lock.release(); } catch (e) {} this.lock = null; },
 };
 
-/* opts: { kind:'warm'|'ex', title, eyebrow, phases:[{label,seconds,type}], ex?:{timer, name, onTickOff} } */
-function openTimer(opts) {
-  $$('.timer-layer').forEach((x) => x.remove());
-  const layer = document.createElement('div'); layer.className = 'timer-layer';
-  const tm = opts.ex ? opts.ex.timer : null; const totalSets = tm ? tm.sets : 0;
-  const st = { phases: opts.phases, i: 0, dur: opts.phases[0].seconds, endAt: 0, left: opts.phases[0].seconds * 1000, running: false, finished: false, set: 1, late: false };
-  const modes = tm ? [tm.work && { id: 'work', label: tm.sides > 1 ? `Work ${tm.sides}×${fmtT(tm.work)}` : `Work ${fmtT(tm.work)}`, phases: workPhases(tm) },
-    tm.rest && { id: 'rest', label: `Rest ${fmtT(tm.rest)}`, phases: [{ label: tm.restDefault ? 'Rest between sets' : (tm.roundRest ? 'Rest between moves' : 'Rest between sets'), seconds: tm.rest, type: 'rest' }] },
-    tm.roundRest && { id: 'round', label: `Round rest ${fmtT(tm.roundRest)}`, phases: [{ label: 'Rest between rounds', seconds: tm.roundRest, type: 'rest' }] }].filter(Boolean) : [];
-  let mode = opts.mode || (modes[0] && modes[0].id);
-  const R = 118, C = 2 * Math.PI * R;
-  layer.innerHTML = `<div class="scrim timer-scrim"></div>
-    <section class="timer glass" role="dialog" aria-modal="true" aria-label="${esc(opts.title)} timer">
-      <div class="timer-top"><div><span class="eyebrow">${esc(opts.eyebrow)}</span><h3>${esc(opts.title)}</h3></div>
-        <button class="icon-btn glass" data-t="close" aria-label="Close timer">${ICON.x}</button></div>
-      ${modes.length > 1 ? `<div class="timer-modes" role="radiogroup" aria-label="Timer type">${modes.map((m) => `<button role="radio" data-mode="${m.id}">${esc(m.label)}</button>`).join('')}</div>` : ''}
-      <div class="timer-dial">
-        <svg viewBox="0 0 260 260" aria-hidden="true"><circle class="trk" cx="130" cy="130" r="${R}"/><circle class="prg" cx="130" cy="130" r="${R}" stroke-dasharray="${C}" stroke-dashoffset="0"/></svg>
-        <div class="timer-read"><span class="timer-phase"></span><b class="timer-digits" aria-live="off">0:00</b><span class="timer-sub"></span></div>
-      </div>
-      ${totalSets > 1 ? `<div class="timer-sets"><button class="ts-btn" data-t="set-" aria-label="Previous set">−</button>
-        <div class="ts-mid"><span class="ts-dots">${Array.from({ length: totalSets }, () => '<i></i>').join('')}</span><span class="ts-label"></span></div>
-        <button class="ts-btn" data-t="set+" aria-label="Next set">+</button></div>` : ''}
-      <div class="timer-ctl">
-        <button class="tc-small glass" data-t="minus" aria-label="Minus 15 seconds">−15s</button>
-        <button class="tc-main" data-t="toggle" aria-label="Start"></button>
-        <button class="tc-small glass" data-t="plus" aria-label="Plus 15 seconds">+15s</button>
-      </div>
-      <div class="timer-foot"><button class="tc-link" data-t="reset">${TICON.reset}Reset</button><span class="timer-status" role="status" aria-live="polite"></span>
-        ${opts.ex ? '<button class="tc-link" data-t="tickoff" hidden>' + WICON.check + 'Tick off</button>' : ''}</div>
-    </section>`;
-  document.body.append(layer); document.documentElement.classList.add('timer-open');
-  const el = $('.timer', layer), digits = $('.timer-digits', el), prg = $('.prg', el), phaseEl = $('.timer-phase', el), sub = $('.timer-sub', el), status = $('.timer-status', el);
-  const toggleBtn = $('[data-t="toggle"]', el);
-  const remaining = () => (st.running ? st.endAt - Date.now() : st.left);
-  const paint = () => {
-    const ms = Math.max(0, remaining()), ph = st.phases[st.i];
-    digits.textContent = fmtT(ms / 1000); prg.style.strokeDashoffset = String(C * (1 - ms / (st.dur * 1000 || 1)));
-    phaseEl.textContent = st.finished ? 'Time!' : ph.label; sub.textContent = st.phases.length > 1 ? `${st.i + 1} of ${st.phases.length}` : (st.running ? '' : st.finished ? '' : 'Ready');
-    el.dataset.type = ph.type; el.classList.toggle('is-running', st.running); el.classList.toggle('is-done', st.finished);
-    toggleBtn.innerHTML = st.running ? TICON.pause : WICON.play; toggleBtn.setAttribute('aria-label', st.running ? 'Pause' : st.finished ? 'Start again' : 'Start');
-    if (totalSets > 1) { $$('.ts-dots i', el).forEach((d, k) => { d.classList.toggle('on', k < st.set - 1 || (k === st.set - 1 && st.finished && ph.type === 'work')); d.classList.toggle('cur', k === st.set - 1); });
-      $('.ts-label', el).textContent = `Set ${st.set} of ${totalSets}`; }
-    $$('[data-mode]', el).forEach((b) => b.setAttribute('aria-checked', b.dataset.mode === mode));
-    const tk = $('[data-t="tickoff"]', el); if (tk) tk.hidden = !(st.set >= totalSets && st.finished);
-  };
-  let raf = 0, iv = 0;
-  const loop = () => { cancelAnimationFrame(raf); if (!st.running) return; check(); paint(); raf = requestAnimationFrame(loop); };
-  const check = () => { if (st.running && remaining() <= 0) phaseEnd(); };
-  const startPhase = (resetLeft) => { if (resetLeft) st.left = st.dur * 1000; st.endAt = Date.now() + st.left; st.running = true; st.finished = false;
-    Beep.schedule(st.left, st.i === st.phases.length - 1); Wake.on(); loop(); };
-  function phaseEnd() {
-    const lateBy = Date.now() - st.endAt; st.running = false; st.left = 0;
-    if (lateBy > 1500) Beep.now(st.i === st.phases.length - 1); // we were in the background: the scheduled beep may have been suspended
-    flash();
-    if (st.i < st.phases.length - 1) { st.i++; st.dur = st.phases[st.i].seconds; st.left = st.dur * 1000; startPhase(true); status.textContent = `${st.phases[st.i].label} — go`; return; }
-    st.finished = true; Wake.off();
-    if (opts.onDone) try { opts.onDone(st.phases[st.i].type); } catch (e) {}
-    if (navigator.vibrate) try { navigator.vibrate([180, 90, 180, 90, 320]); } catch (e) {}
-    const ph = st.phases[st.i];
-    if (totalSets > 1 && ph.type === 'rest' && st.set < totalSets) { st.set++; status.textContent = `Rest over — set ${st.set} of ${totalSets}`; }
-    else if (totalSets > 1 && ph.type === 'work') status.textContent = st.set < totalSets ? 'Nice! Take your rest' : `All ${totalSets} sets done`;
-    else status.textContent = 'Time’s up';
-    if (totalSets > 1 && ph.type === 'work' && st.set < totalSets && modes.some((m) => m.id === 'rest')) setTimeout(() => { if (layer.isConnected && st.finished) { setMode('rest'); status.textContent = 'Rest ready — tap play'; } }, 1400);
-    paint();
+/* ───────── Guided workout player ─────────
+   Runs warm-up → exercises (every round/set) → stretches. Timed steps count down; rep steps wait for "Done" (with a stopwatch).
+   After each step the rest starts by itself and shows what's up next; when the rest ends the next step starts by itself.
+   Time is computed from end timestamps (Date.now), and each phase is chained from the previous phase's end time, so a backgrounded or
+   locked phone catches up correctly. Beeps are scheduled on the AudioContext clock, unlocked by the Start tap. */
+function openSession({ b, w, prog, pr, save, from, onClose }) {
+  $$('.player').forEach((x) => x.remove());
+  const { steps, S } = buildSession(w); if (!steps.length) return;
+  const N = steps.length, rm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const firstOf = (sec) => steps.findIndex((s) => s.sec === sec);
+  const counts = ['warmup', 'exercise', 'stretch'].map((k) => [k, steps.filter((s) => s.sec === k).length]).filter((x) => x[1]);
+  const P = { i: 0, phase: 'ready', running: false, endAt: 0, left: 0, dur: 5, swAt: 0, swAcc: 0, status: {}, startedAt: Date.now(), natural: false, closed: false };
+  if (from && from.status) { P.status = from.status; P.startedAt = from.startedAt || Date.now(); P.i = Math.min(N - 1, Math.max(0, from.i | 0)); }
+  const el = document.createElement('div'); el.className = 'player'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', `Workout ${w.day} player`);
+  el.setAttribute('style', wkStyle(w));
+  el.innerHTML = `<div class="pl-glow" aria-hidden="true"></div>
+    <header class="pl-top"><button class="pl-x" data-p="end" aria-label="End workout">${ICON.x}</button>
+      <div class="pl-where"><b class="pl-sec"></b><span class="pl-count"></span></div><span class="pl-clock" aria-label="Time so far"></span></header>
+    <div class="pl-prog" aria-hidden="true">${counts.map(([k, n]) => `<span class="pp-${SECS[k].id}" style="flex:${n}"><i></i></span>`).join('')}</div>
+    <main class="pl-main">
+      <div class="pl-stage"><button class="pl-photo" data-p="zoom" aria-label="Enlarge picture"><img alt="" width="800" height="600" decoding="async"><span class="pl-ribbon"></span><span class="pl-badge"></span></button></div>
+      <div class="pl-info"><span class="pl-kicker"></span><h2 class="pl-name"></h2><span class="pl-amt"></span></div>
+      <div class="pl-timer"><span class="pl-phase"></span><b class="pl-digits" aria-live="off">0:00</b><div class="pl-bar"><i></i></div><span class="pl-status" role="status" aria-live="polite"></span></div>
+      <div class="pl-extra"></div>
+      <details class="pl-how"><summary>How to do it</summary><div class="pl-how-body"></div></details>
+    </main>
+    <footer class="pl-ctl">
+      <button class="pl-sm" data-p="back" aria-label="Back">${TICON.back}<span>Back</span></button>
+      <button class="pl-sm" data-p="minus" aria-label="Minus 15 seconds"><b>−15</b><span>sec</span></button>
+      <button class="pl-main-btn" data-p="main" aria-label="Pause"></button>
+      <button class="pl-sm" data-p="plus" aria-label="Plus 15 seconds"><b>+15</b><span>sec</span></button>
+      <button class="pl-sm" data-p="skip" aria-label="Skip">${TICON.skip}<span>Skip</span></button>
+    </footer>
+    <div class="pl-confirm" hidden><div class="pl-confirm-card"><h3>End the workout?</h3><p>You can pick up where you left off later, or see your summary now.</p>
+      <button class="btn btn-block btn-primary" data-p="end-yes">End &amp; see summary</button><button class="btn btn-block btn-ghost" data-p="end-no">Keep going</button></div></div>`;
+  document.body.append(el); document.documentElement.classList.add('player-open');
+  const q = (s) => $(s, el);
+  const img = q('.pl-photo img'), digits = q('.pl-digits'), barI = q('.pl-bar i'), status = q('.pl-status'), mainBtn = q('[data-p="main"]');
+  let shownImg = '', howFor = -1;
+
+  const cur = () => steps[P.i];
+  const nextWork = () => steps[P.i + 1];
+  const countdown = () => P.phase === 'ready' || P.phase === 'rest' || (P.phase === 'work' && cur().seconds > 0);
+  const remaining = () => (P.running ? P.endAt - Date.now() : P.left);
+  const swMs = () => P.swAcc + (P.running ? Date.now() - P.swAt : 0);
+  const persist = () => { if (P.phase === 'done') return WKSESSION.set(null); WKSESSION.set({ bid: b.id, day: w.day, i: P.i, status: P.status, startedAt: P.startedAt, at: Date.now() }); };
+  const timeTo = (sec, at, finalChime) => { P.dur = sec; P.endAt = (at || Date.now()) + sec * 1000; P.left = P.endAt - Date.now(); P.running = true; Beep.schedule(P.endAt - Date.now(), finalChime); };
+  const sideLabel = (s) => (s.sides > 1 ? `${s.sideWord === 'direction' ? 'Direction' : s.sideWord === 'leg' ? 'Leg' : 'Side'} ${s.side} of ${s.sides}` : '');
+  const setLabel = (s) => (s.sec !== 'exercise' ? '' : S.circuit ? `Round ${s.round} of ${s.sets}` : `Set ${s.set} of ${s.sets}`);
+  const amt = (s) => (s.seconds ? fmtDur(s.seconds) + (s.sides > 1 ? ` · ${sideLabel(s).toLowerCase()}` : '') : s.reps);
+
+  function enter(i, phase, at) {
+    Beep.cancel(); P.i = i; P.phase = phase; const s = cur();
+    if (phase === 'work') { if (s.seconds) timeTo(s.seconds, at, true); else { P.running = true; P.swAt = Date.now(); P.swAcc = Math.max(0, Date.now() - (at || Date.now())); } status.textContent = s.seconds ? 'Go!' : 'Tap Done when you finish'; }
+    else if (phase === 'rest') { timeTo(s.rest.s, at, false); status.textContent = s.rest.kind === 'switch' ? 'Switch sides' : ''; }
+    else if (phase === 'ready') { timeTo(5, at, false); status.textContent = 'Get into position'; }
+    persist(); paint(true);
   }
-  function flash() { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); haptic(40); }
-  function setMode(id) { const m = modes.find((x) => x.id === id); if (!m) return; mode = id; Beep.cancel(); st.running = false; st.phases = m.phases; st.i = 0; st.dur = m.phases[0].seconds; st.left = st.dur * 1000; st.finished = false; Wake.off(); paint(); }
-  const close = () => { st.running = false; Beep.cancel(); Wake.off(); cancelAnimationFrame(raf); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); document.removeEventListener('keydown', onKey);
-    el.classList.add('out'); $('.timer-scrim', layer).style.opacity = '0'; document.documentElement.classList.remove('timer-open'); setTimeout(() => layer.remove(), 240); };
-  const onVis = () => { if (document.visibilityState === 'visible') { if (st.running) { Wake.on(); check(); loop(); } paint(); } };
-  const onKey = (k) => { if (k.key === 'Escape') close(); else if (k.key === ' ' && k.target === document.body) { k.preventDefault(); toggleBtn.click(); } };
-  document.addEventListener('visibilitychange', onVis); document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close, { once: true });
-  iv = setInterval(() => { check(); if (st.running) paint(); }, 250); // backup when rAF is throttled
+  function complete(i) { const s = steps[i]; if (P.status[i] === 'done') return; P.status[i] = 'done';
+    const lastSide = !s.sides || s.side === s.sides || s.side === 0;
+    if (s.seconds) WKS.bump('timers');
+    if (s.sec === 'exercise' && lastSide) { WKS.bump('timerSets'); tickExercise(s.ex); }
+    if (s.sec === 'warmup' && s.seconds && lastSide) WKS.bump('warmTimers');
+    const wsteps = steps.filter((x) => x.sec === 'warmup'); if (s.sec === 'warmup' && wsteps.length && wsteps.every((x) => P.status[x.n] === 'done') && pr.warm !== true) { pr.warm = true; save(); }
+    flash(); haptic(40); }
+  function tickExercise(e) { if (pr.ex[e.slug]) return; const mine = steps.filter((x) => x.ex === e), need = S.circuit ? (S.minRounds || S.rounds) : (mine[0] ? mine[0].sets : 1);
+    const sets = new Set(mine.filter((x) => P.status[x.n] === 'done' && (x.side === 0 || x.side === x.sides)).map((x) => x.set));
+    if (sets.size >= need) { pr.ex[e.slug] = true; save(); } }
+  function afterWork(at) { const s = cur(); if (!s.rest || P.i >= N - 1) return finish(true); enter(P.i, 'rest', at); }
+  function onEnd(at) {
+    if (P.phase === 'ready') return enter(P.i, 'work', at);
+    if (P.phase === 'work') { complete(P.i); return afterWork(at); }
+    if (P.phase === 'rest') { WKS.bump('timers'); return enter(P.i + 1, 'work', at); }
+  }
+  function check() { let guard = 0; while (!P.closed && P.running && countdown() && P.phase !== 'done' && remaining() <= 0 && guard++ < 200) { const at = P.endAt, late = Date.now() - at > 1500; onEnd(at); if (late && P.phase !== 'done') Beep.now(false); } }
+  function finish(natural) {
+    Beep.cancel(); P.running = false; P.phase = 'done'; P.natural = natural; Wake.off(); WKSESSION.set(null);
+    try { Beep.now(true); } catch (e) {} if (navigator.vibrate && navigator.userActivation && navigator.userActivation.hasBeenActive) try { navigator.vibrate([180, 90, 180, 90, 320]); } catch (e) {}
+    showSummary();
+  }
+  function flash() { const t = q('.pl-timer'); t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash'); }
+
+  function paint(full) {
+    if (P.phase === 'done') return;
+    const s = cur(), resting = P.phase !== 'work', show = P.phase === 'rest' ? nextWork() || s : s;
+    el.dataset.phase = P.phase; el.dataset.sec = SECS[show.sec].id; el.classList.toggle('is-paused', !P.running);
+    if (full) {
+      const src = show.image || ''; if (src !== shownImg) { img.src = src; shownImg = src; img.parentElement.classList.toggle('no-img', !src); }
+      img.alt = show.name;
+      q('.pl-ribbon').textContent = P.phase === 'rest' ? (s.rest.kind === 'switch' ? 'Other side next' : 'Up next') : P.phase === 'ready' ? 'Up first' : '';
+      q('.pl-badge').textContent = [setLabel(show), sideLabel(show)].filter(Boolean).join(' · ');
+      q('.pl-kicker').textContent = P.phase === 'rest' ? (s.rest.kind === 'switch' ? `Switch ${s.sideWord === 'direction' ? 'direction' : s.sideWord === 'leg' ? 'legs' : 'sides'}` : `Up next · ${SECS[show.sec].label}`) : P.phase === 'ready' ? 'Get ready' : `${SECS[s.sec].label}${s.sec === 'exercise' ? ` · ${setLabel(s)}` : ''}`;
+      q('.pl-name').textContent = show.name; q('.pl-amt').textContent = amt(show);
+      q('.pl-sec').textContent = SECS[show.sec].label;
+      q('.pl-count').textContent = `Step ${show.n + 1} of ${N}`;
+      q('.pl-phase').textContent = P.phase === 'rest' ? (s.rest.kind === 'switch' ? 'Switch' : s.rest.kind === 'round' ? `Rest · round ${s.rest.round} done` : s.rest.kind === 'transition' ? `Rest · next: ${SECS[show.sec].label.toLowerCase()}` : 'Rest') : P.phase === 'ready' ? 'Starting in' : s.seconds ? 'Work' : (s.reps || 'Reps');
+      const ex = q('.pl-extra');
+      ex.innerHTML = P.phase === 'rest' && s.rest.canFinish && firstOf('stretch') !== 0 ? `<button class="pl-chip" data-p="finish-rounds">${WICON.check}${s.rest.round} rounds is enough — go to ${firstOf('stretch') > 0 ? 'stretches' : 'finish'}</button>`
+        : P.phase === 'work' && !s.seconds ? '' : '';
+      // progress per section
+      counts.forEach(([k]) => { const all = steps.filter((x) => x.sec === k), done = all.filter((x) => x.n < P.i || (x.n === P.i && P.phase === 'rest')).length;
+        q(`.pp-${SECS[k].id} i`).style.width = (done / all.length * 100) + '%'; });
+      if (howFor !== show.n) { howFor = show.n; const it = show.item, isEx = show.sec === 'exercise';
+        const stepsL = isEx ? [it.formTips, ...(it.formPoints || [])].filter(Boolean) : (it.steps || []);
+        const miss = isEx ? [] : (it.mistakes || []);
+        q('.pl-how-body').innerHTML = `${stepsL.length ? `<ol class="howto-steps">${stepsL.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>` : ''}${miss.length ? `<h4>Common mistakes</h4><ul class="howto-miss">${miss.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}${isEx && it.easierOption ? `<p class="ex-easier"><span>Easier</span>${esc(it.easierOption)}</p>` : ''}`; }
+      const repMode = P.phase === 'work' && !s.seconds;
+      q('[data-p="minus"]').disabled = repMode; q('[data-p="plus"]').disabled = repMode;
+      q('[data-p="back"]').disabled = P.i === 0 && P.phase !== 'rest';
+    }
+    // timer read-out
+    const repMode = P.phase === 'work' && !s.seconds;
+    if (repMode) { digits.textContent = fmtT(swMs() / 1000).replace(/^/, ''); barI.style.width = '0%'; el.classList.add('is-reps'); }
+    else { el.classList.remove('is-reps'); const ms = Math.max(0, remaining()); digits.textContent = fmtT(ms / 1000); barI.style.width = (100 * (1 - ms / (P.dur * 1000 || 1))) + '%'; }
+    mainBtn.innerHTML = repMode ? `${WICON.check}<span>Done</span>` : P.running ? TICON.pause : WICON.play;
+    mainBtn.classList.toggle('is-done-btn', repMode);
+    mainBtn.setAttribute('aria-label', repMode ? 'Done — finished this set' : P.running ? 'Pause' : 'Resume');
+    q('.pl-clock').textContent = fmtT((Date.now() - P.startedAt) / 1000);
+  }
+
+  function showSummary() {
+    const doneN = steps.filter((s) => P.status[s.n] === 'done').length;
+    const per = counts.map(([k]) => { const all = steps.filter((x) => x.sec === k); return [k, all.filter((x) => P.status[x.n] === 'done').length, all.length]; });
+    const sets = steps.filter((s) => s.sec === 'exercise' && (s.side === 0 || s.side === s.sides) && P.status[s.n] === 'done').length;
+    const totalSets = steps.filter((s) => s.sec === 'exercise' && (s.side === 0 || s.side === s.sides)).length;
+    const skipped = steps.filter((s) => P.status[s.n] === 'skip').length;
+    const mins = Math.max(1, Math.round((Date.now() - P.startedAt) / 60000));
+    const warmSteps = steps.filter((x) => x.sec === 'warmup');
+    if (warmSteps.length && !warmSteps.some((x) => P.status[x.n] === 'done') && pr.warm !== true) { pr.warm = false; save(); }
+    el.dataset.phase = 'done';
+    q('.pl-main').innerHTML = `<div class="pl-sum">
+      <div class="pl-sum-badge">${WICON.check}</div>
+      <h2>${P.natural ? 'Workout complete!' : 'Nice effort'}</h2>
+      <p class="pl-sum-sub">${esc(w.theme)} · Workout ${w.day}</p>
+      <div class="pl-sum-grid">
+        <div><b>${mins}</b><small>minutes</small></div>
+        <div><b>${sets}<em>/${totalSets}</em></b><small>sets</small></div>
+        <div><b>${doneN}<em>/${N}</em></b><small>steps</small></div>
+      </div>
+      <ul class="pl-sum-secs">${per.map(([k, d, t]) => `<li class="ps-${SECS[k].id}">${WICON[SECS[k].icon]}<span>${SECS[k].label}</span><b>${d === t ? '✓ all done' : `${d} of ${t}`}</b></li>`).join('')}</ul>
+      ${skipped ? `<p class="pl-sum-note">${skipped} step${skipped > 1 ? 's' : ''} skipped — that’s fine, listen to your body.</p>` : ''}
+      <div class="pl-sum-act">${pr.done ? `<p class="pl-sum-saved">${WICON.check}<span class="pl-saved-txt">Saved — logged in your diary</span></p>` : `<button class="btn btn-block btn-primary" data-p="mark">${WICON.check}Mark workout done</button>`}
+        <button class="btn btn-block btn-ghost" data-p="close">Close</button></div></div>`;
+    q('.pl-ctl').hidden = true; q('.pl-count').textContent = `${doneN} of ${N} steps`; q('.pl-sec').textContent = 'Summary';
+    counts.forEach(([k]) => { q(`.pp-${SECS[k].id} i`).style.width = '100%'; });
+    if (P.natural && !pr.done) markDone();
+    else { setTimeout(() => celebrate(q('.pl-sum-badge'), 30, 110), 120); setTimeout(() => { if (!P.closed) checkTrophies(); }, 1200); }
+  }
+  async function markDone() {
+    const msg = await markWorkoutDone(b, w, prog, pr); const act = q('.pl-sum-act');
+    if (act) { const m = q('[data-p="mark"]'); if (m) m.outerHTML = `<p class="pl-sum-saved">${WICON.check}<span class="pl-saved-txt">${esc(msg)}</span></p>`; else { const t = q('.pl-saved-txt'); if (t) t.textContent = msg; } }
+    haptic([20, 40, 30]); setTimeout(() => celebrate(q('.pl-sum-badge') || el, 36, 120), 120);
+    setTimeout(() => { if (!P.closed) checkTrophies(); }, 1200);
+  }
+
+  let raf = 0, iv = 0, lastSec = -1;
+  const loop = () => { cancelAnimationFrame(raf); if (P.closed) return; check(); const s = Math.floor((countdown() ? remaining() : swMs()) / 250); if (s !== lastSec) { lastSec = s; paint(false); } raf = requestAnimationFrame(loop); };
+  iv = setInterval(() => { check(); if (!P.closed && P.phase !== 'done') paint(false); }, 250); // backup when rAF is throttled
+  const pause = () => { if (!P.running) return; if (countdown()) P.left = remaining(); else P.swAcc = swMs(); P.running = false; Beep.cancel(); status.textContent = 'Paused'; Wake.off(); paint(true); };
+  const resume = () => { if (P.running) return; if (countdown()) { P.endAt = Date.now() + P.left; Beep.schedule(P.left, P.phase === 'work'); } else P.swAt = Date.now(); P.running = true; status.textContent = ''; Wake.on(); paint(true); };
+  const close = () => { if (P.closed) return; P.closed = true; Beep.cancel(); Wake.off(); cancelAnimationFrame(raf); clearInterval(iv);
+    document.removeEventListener('visibilitychange', onVis); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onHash);
+    if (P.phase !== 'done') persist();
+    document.documentElement.classList.remove('player-open'); el.classList.add('out'); setTimeout(() => el.remove(), 240);
+    setTimeout(() => checkTrophies(), 400);
+    if (onClose) onClose(); };
+  const onHash = () => close();
+  const onVis = () => { if (document.visibilityState === 'visible' && !P.closed) { if (P.running) Wake.on(); check(); paint(true); } };
+  const onKey = (k) => { if (k.key === 'Escape') { if (P.phase === 'done' || !q('.pl-confirm').hidden) close(); else q('[data-p="end"]').click(); }
+    else if (k.key === ' ' && (k.target === document.body || el.contains(k.target)) && P.phase !== 'done') { k.preventDefault(); mainBtn.click(); } };
+  document.addEventListener('visibilitychange', onVis); document.addEventListener('keydown', onKey); window.addEventListener('hashchange', onHash);
+
   el.addEventListener('click', (ev) => {
-    const mb = ev.target.closest('[data-mode]'); if (mb) { setMode(mb.dataset.mode); return; }
-    const b = ev.target.closest('[data-t]'); if (!b) return; const t = b.dataset.t;
-    if (t === 'close') return close();
-    if (t === 'toggle') { Beep.unlock();
-      if (st.running) { st.left = remaining(); st.running = false; Beep.cancel(); Wake.off(); status.textContent = 'Paused'; }
-      else { if (st.finished) { st.i = 0; st.dur = st.phases[0].seconds; st.left = st.dur * 1000; } status.textContent = ''; startPhase(st.left <= 0); }
-      haptic(10); paint(); return; }
-    if (t === 'reset') { Beep.cancel(); st.running = false; st.i = 0; st.dur = st.phases[0].seconds; st.left = st.dur * 1000; st.finished = false; Wake.off(); status.textContent = ''; paint(); return; }
-    if (t === 'plus' || t === 'minus') { const d = t === 'plus' ? 15000 : -15000;
-      if (st.finished) { st.finished = false; st.left = 0; }
-      const left = Math.max(st.running ? 1000 : 5000, remaining() + d); if (st.running) { st.endAt = Date.now() + left; Beep.schedule(left, st.i === st.phases.length - 1); } else st.left = left;
-      st.dur = Math.max(st.dur, Math.ceil(left / 1000)); paint(); return; }
-    if (t === 'set+' || t === 'set-') { st.set = Math.min(totalSets, Math.max(1, st.set + (t === 'set+' ? 1 : -1))); paint(); return; }
-    if (t === 'tickoff' && opts.ex && opts.ex.onTickOff) { opts.ex.onTickOff(); close(); }
+    const t = ev.target.closest('[data-p]'); if (!t || t.disabled) return; const a = t.dataset.p; Beep.unlock();
+    if (a === 'zoom') { const s = P.phase === 'rest' ? nextWork() || cur() : cur(), it = s.item;
+      return openPhoto(s.sec === 'exercise' ? it : { name: it.name, image: it.image, full: it.full, formPoints: it.cues }); }
+    if (a === 'close') return close();
+    if (a === 'mark') { t.disabled = true; return markDone(); }
+    if (a === 'end') { if (P.phase === 'done') return close(); q('.pl-confirm').hidden = false; P.wasRunning = P.running; pause(); q('[data-p="end-no"]').focus({ preventScroll: true }); return; }
+    if (a === 'end-no') { q('.pl-confirm').hidden = true; if (P.wasRunning) resume(); return; }
+    if (a === 'end-yes') { q('.pl-confirm').hidden = true; return finish(false); }
+    haptic(10);
+    if (a === 'main') { const s = cur();
+      if (P.phase === 'work' && !s.seconds) { if (!P.running) resume(); complete(P.i); return afterWork(Date.now()); }
+      return P.running ? pause() : resume(); }
+    if (a === 'plus' || a === 'minus') { if (!countdown()) return; const left = Math.max(1000, remaining() + (a === 'plus' ? 15000 : -15000));
+      if (P.running) { P.endAt = Date.now() + left; Beep.schedule(left, P.phase === 'work'); } else P.left = left;
+      P.dur = Math.max(P.dur, Math.ceil(left / 1000)); status.textContent = a === 'plus' ? '+15 seconds' : '−15 seconds'; return paint(false); }
+    if (a === 'skip') { if (P.phase === 'ready') return enter(P.i, 'work');
+      if (P.phase === 'rest') return enter(P.i + 1, 'work');
+      if (!P.status[P.i]) P.status[P.i] = 'skip'; if (P.i >= N - 1) return finish(true); return enter(P.i + 1, 'work'); }
+    if (a === 'back') { if (P.phase === 'rest') return enter(P.i, 'work'); return enter(Math.max(0, P.i - 1), 'work'); }
+    if (a === 'finish-rounds') { const fs = firstOf('stretch');
+      steps.forEach((s) => { if (s.sec === 'exercise' && s.n > P.i && !P.status[s.n]) P.status[s.n] = 'cut'; });
+      w.exercises.forEach((e) => tickExercise(e));
+      if (fs < 0) return finish(true); return enter(fs, 'work'); }
   });
-  $('.timer-scrim', layer).onclick = () => { if (!st.running) close(); };
-  paint(); setTimeout(() => toggleBtn.focus({ preventScroll: true }), 60);
-  if (opts.autostart) { Beep.unlock(); startPhase(true); paint(); }
-  return { el, close };
+  Wake.on();
+  if (from && from.status) enter(P.i, 'work'); else enter(0, 'ready');
+  loop(); setTimeout(() => mainBtn.focus({ preventScroll: true }), 60);
+  return { el, close, P };
 }
-function workPhases(tm) { return tm.sides > 1 ? [{ label: 'Side 1', seconds: tm.work, type: 'work' }, { label: 'Side 2', seconds: tm.work, type: 'work' }] : [{ label: 'Work', seconds: tm.work, type: 'work' }]; }
-function warmPhases(x, t) { return t.sides > 1 ? [{ label: 'Side 1', seconds: t.work, type: 'work' }, { label: 'Side 2', seconds: t.work, type: 'work' }] : [{ label: x.move, seconds: t.work, type: 'work' }]; }
 
 function celebrate(el, n = 26, dist = 90) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
