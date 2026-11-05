@@ -583,8 +583,9 @@ html[data-season]:not([data-season=""]) .date-hero .h-display span { filter: dro
 .ex { padding: 10px 10px 16px; transition: box-shadow .3s; }
 .ex.is-done { box-shadow: var(--shadow), inset 0 0 0 2px rgba(22,199,154,.55); }
 .ex-photo { position: relative; display: block; width: 100%; border-radius: 18px; overflow: hidden; background: #e9e9ec; aspect-ratio: 4 / 3; }
-.ex-photo img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .5s var(--ease); }
-.ex-photo:active img { transform: scale(1.03); }
+.ex-photo img, .ex-photo .mv-vid { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .5s var(--ease); }
+.ex-photo .mv-vid { pointer-events: none; background: #e9e9ec; }
+.ex-photo:active img, .ex-photo:active .mv-vid { transform: scale(1.03); }
 .ex-num { position: absolute; left: 10px; top: 10px; width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; color: #fff; font-family: var(--font-display); font-weight: 800; font-size: 17px;
   background: var(--wk); box-shadow: 0 6px 14px -6px var(--wk-glow), inset 0 1px 0 rgba(255,255,255,.45); }
 .zoom-hint { position: absolute; right: 10px; bottom: 10px; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: rgba(20,20,40,.45);
@@ -721,7 +722,8 @@ html[data-season]:not([data-season=""]) .date-hero .h-display span { filter: dro
 .howto-top h3 { margin: 3px 0 0; font-family: var(--font-display); font-size: 25px; letter-spacing: -.02em; line-height: 1.12; }
 .howto-body { overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 0 18px calc(var(--sab) + 22px); }
 .howto-photo { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 20px; overflow: hidden; background: #e9e9ec; }
-.howto-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.howto-photo img, .howto-photo .mv-vid { width: 100%; height: 100%; object-fit: cover; display: block; }
+.howto-photo .mv-vid { pointer-events: none; background: #e9e9ec; }
 .howto-amt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 2px; }
 .howto-amt .chip { gap: 6px; font-weight: 800; } .howto-amt small { font-size: 13px; color: var(--ink-2); font-weight: 600; }
 .howto h4, .pl-how h4 { margin: 18px 0 8px; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
@@ -759,9 +761,12 @@ html[data-season]:not([data-season=""]) .date-hero .h-display span { filter: dro
 .pl-main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 12px 16px 8px; max-width: 560px; width: 100%; margin: 0 auto; }
 .pl-stage { position: relative; }
 .pl-photo { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; max-height: 34vh; border-radius: 24px; overflow: hidden; background: #e9e9ec; box-shadow: 0 16px 34px -18px rgba(20,14,50,.5); }
-.pl-photo img { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity .25s, transform .4s var(--ease); }
+.pl-photo img, .pl-photo .pl-vid { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity .25s, transform .4s var(--ease); }
+.pl-photo .pl-vid { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; background: #e9e9ec; }
+.pl-photo.has-vid img.pl-still { position: absolute; inset: 0; opacity: 0; }
 .pl-photo.no-img img { opacity: 0; }
-.player[data-phase="rest"] .pl-photo img, .player[data-phase="ready"] .pl-photo img { opacity: .9; transform: scale(.97); }
+.player[data-phase="rest"] .pl-photo img, .player[data-phase="ready"] .pl-photo img,
+.player[data-phase="rest"] .pl-photo .pl-vid, .player[data-phase="ready"] .pl-photo .pl-vid { opacity: .9; transform: scale(.97); }
 .pl-ribbon { position: absolute; left: 10px; top: 10px; padding: 6px 11px; border-radius: 99px; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #fff; background: var(--rest); box-shadow: 0 6px 14px -6px rgba(30,40,120,.6); }
 .pl-ribbon:empty, .pl-badge:empty { display: none; }
 .pl-badge { position: absolute; right: 10px; bottom: 10px; padding: 6px 11px; border-radius: 99px; font-size: 12.5px; font-weight: 800; color: #fff; background: rgba(14,12,32,.62); }
@@ -833,8 +838,10 @@ html[data-season]:not([data-season=""]) .date-hero .h-display span { filter: dro
 @media (prefers-reduced-motion: reduce) {
   .player, .player.out, .howto, .howto.out, .pl-confirm-card, .pl-sum-badge { animation: none; }
   .pl-timer.flash { animation: none; } .pl-timer.flash::after { animation: none; opacity: 0; }
-  .pl-prog i, .pl-photo img { transition: none; }
-  .player[data-phase="rest"] .pl-photo img { transform: none; }
+  .pl-prog i, .pl-photo img, .pl-photo .pl-vid, .ex-photo img, .ex-photo .mv-vid, .howto-photo .mv-vid { transition: none; }
+  .player[data-phase="rest"] .pl-photo img, .player[data-phase="rest"] .pl-photo .pl-vid { transform: none; }
+  /* JS already omits <video> when Reduce Motion is on; hide any stray clip */
+  .mv-vid, .pl-vid { display: none !important; }
 }
 
 /* ───────── Trophies ───────── */

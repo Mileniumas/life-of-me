@@ -654,14 +654,14 @@ function buildSession(w) {
   const steps = [];
   const sw = { s: S.switch || 5, kind: 'switch' };
   const addMove = (x, sec, rest) => { const n = x.seconds && x.sides > 1 ? x.sides : 1;
-    for (let s = 1; s <= n; s++) steps.push({ sec, item: x, name: x.name, image: x.image, seconds: x.seconds || 0, reps: x.seconds ? null : (x.reps || x.detail || ''),
+    for (let s = 1; s <= n; s++) steps.push({ sec, item: x, name: x.name, image: x.image, video: x.video || '', seconds: x.seconds || 0, reps: x.seconds ? null : (x.reps || x.detail || ''),
       side: n > 1 ? s : 0, sides: n, sideWord: x.sideWord || 'side', rest: s < n ? sw : { s: rest, kind: 'rest' } }); };
   const endSection = (kind) => { const l = steps[steps.length - 1]; if (l) l.rest = { s: S.transition || 30, kind }; };
   (w.warmup || []).forEach((x) => addMove(x, 'warmup', x.rest != null ? x.rest : (w.warmupRestSeconds || 10)));
   endSection('transition');
   const ex = w.exercises || [];
   const exStep = (e, k, set, sets, round) => { const t = timerOfEx(e), n = t.work && t.sides > 1 ? 2 : 1;
-    for (let s = 1; s <= n; s++) steps.push({ sec: 'exercise', item: e, ex: e, name: e.name, image: e.image, seconds: t.work || 0, reps: t.work ? null : (e.reps || ''),
+    for (let s = 1; s <= n; s++) steps.push({ sec: 'exercise', item: e, ex: e, name: e.name, image: e.image, video: e.video || '', seconds: t.work || 0, reps: t.work ? null : (e.reps || ''),
       side: n > 1 ? s : 0, sides: n, sideWord: /\bleg\b/i.test(e.time || '') ? 'leg' : 'side', set, sets, round, rest: s < n ? sw : null }); };
   if (S.circuit) {
     const R = S.rounds || 3;
@@ -712,7 +712,7 @@ function viewWorkout(app, blockId, day) {
       <h2 class="wk-section">${WICON.dumbbell}Exercises<small>${w.exercises.length} moves</small></h2>
       <p class="wk-rest">${restLine}</p>
       <div class="wk-ex-list">${w.exercises.map((e) => `<article class="ex card glass" data-slug="${esc(e.slug)}">
-      <button class="ex-photo" data-zoom="${esc(e.slug)}" aria-label="Enlarge ${esc(e.name)} photo"><img src="${e.image}" alt="${esc(e.name)} — ${esc((e.formPoints || []).join(', '))}" loading="lazy" decoding="async" width="800" height="600"><span class="zoom-hint">${WICON.zoom}</span><span class="ex-num">${e.order}</span></button>
+      <button class="ex-photo" data-zoom="${esc(e.slug)}" aria-label="Enlarge ${esc(e.name)} photo">${mediaHtml(e, { alt: `${e.name} — ${(e.formPoints || []).join(', ')}` })}<span class="zoom-hint">${WICON.zoom}</span><span class="ex-num">${e.order}</span></button>
       <div class="ex-head"><div><h3>${esc(e.name)}</h3><div class="ex-amount">${esc(amount(e))}</div></div>
         <button class="tick" role="checkbox" aria-checked="${!!pr.ex[e.slug]}" aria-label="Done: ${esc(e.name)}" data-tick="${esc(e.slug)}">${WICON.check}</button></div>
       <p class="ex-tip">${esc(e.formTips)}</p>
@@ -755,6 +755,14 @@ function viewWorkout(app, blockId, day) {
     const z = ev.target.closest('[data-zoom]'); if (z) { openPhoto(w.exercises.find((e) => e.slug === z.dataset.zoom)); return; }
   };
   app.addEventListener('click', app._wkClick);
+  if (app._wkVids) { try { app._wkVids.disconnect(); } catch (e) {} app._wkVids = null; }
+  if (!prefersReduceMotion() && 'IntersectionObserver' in window) {
+    app._wkVids = new IntersectionObserver((ents) => { ents.forEach((en) => { const v = en.target; if (!(v instanceof HTMLVideoElement)) return;
+      if (en.isIntersecting) { try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+      else { try { v.pause(); } catch (e) {} } }); }, { root: null, threshold: 0.35 });
+    $$('video.mv-vid', app).forEach((v) => app._wkVids.observe(v));
+  } else playMedia(app);
+
   doneBtn.onclick = async () => {
     if (pr.done) { pr.done = false; pr.doneAt = null; save(); render(); toast('Marked as not done — your diary was left as is'); return; }
     Beep.unlock(); render(); haptic([20, 40, 30]);
@@ -772,6 +780,29 @@ async function markWorkoutDone(b, w, prog, pr) {
   return finishedAll ? `Block ${b.block} complete! Logged in your diary` : added ? `Done! Added to your diary for ${fmt(parseKey(w.date), { day: 'numeric', month: 'short' })}` : 'Done! Already in your diary';
 }
 
+
+/* Move demo videos: silent looping clips. Poster = still. Reduce Motion → still only. */
+const prefersReduceMotion = () => {
+  try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
+};
+const moveVideo = (x) => (x && x.video && !prefersReduceMotion()) ? x.video : null;
+function mediaHtml(x, { cls = '', alt = '', zoom = false } = {}) {
+  if (!x || !x.image) return '';
+  const a = alt || x.name || '';
+  const v = moveVideo(x);
+  if (!v) return `<img src="${x.image}" alt="${esc(a)}" width="800" height="600" decoding="async"${zoom ? '' : ' loading="lazy"'}>`;
+  // muted + playsinline + loop for iOS Safari autoplay; poster keeps a frame before load
+  return `<video class="mv-vid" src="${v}" poster="${x.image}" muted playsinline loop preload="metadata" disablepictureinpicture aria-label="${esc(a)}"></video>`;
+}
+function playMedia(root) {
+  if (!root || prefersReduceMotion()) return;
+  $$('video.mv-vid', root).forEach((v) => { try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} });
+}
+function pauseMedia(root) {
+  if (!root) return;
+  $$('video.mv-vid', root).forEach((v) => { try { v.pause(); } catch (e) {} });
+}
+
 /* How-to sheet for a warm-up move or stretch: picture (tap to zoom), steps, common mistakes. */
 function openHowTo(x, kind) {
   if (!x) return;
@@ -781,7 +812,7 @@ function openHowTo(x, kind) {
     <div class="howto-top"><div><span class="eyebrow">${kind === 'stretch' ? 'Stretch' : 'Warm-up'} · how to</span><h3 id="howtoTitle">${esc(x.name)}</h3></div>
       <button class="icon-btn glass" data-close aria-label="Close">${ICON.x}</button></div>
     <div class="howto-body">
-      ${x.image ? `<button class="howto-photo" data-zoom aria-label="Enlarge picture"><img src="${x.image}" alt="${esc(x.name)} — ${esc((x.cues || []).join(', '))}" width="800" height="600" decoding="async"><span class="zoom-hint">${WICON.zoom}</span></button>` : ''}
+      ${x.image ? `<button class="howto-photo" data-zoom aria-label="${moveVideo(x) ? 'Enlarge still' : 'Enlarge picture'}">${mediaHtml(x, { alt: `${x.name} — ${(x.cues || []).join(', ')}` })}<span class="zoom-hint">${WICON.zoom}</span></button>` : ''}
       <div class="howto-amt"><span class="chip glass">${x.seconds ? WICON.clock : WICON.loop}${esc(moveAmount(x))}</span>${x.detail && x.detail !== moveAmount(x) ? `<small>${esc(x.detail)}</small>` : ''}</div>
       ${(x.steps || []).length ? `<h4>How to do it</h4><ol class="howto-steps">${x.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
       ${(x.mistakes || []).length ? `<h4>Common mistakes</h4><ul class="howto-miss">${x.mistakes.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}
@@ -789,13 +820,13 @@ function openHowTo(x, kind) {
       ${x.added ? `<p class="howto-note">${WICON.spark}Added to round off this session — it stretches the muscles you worked today.</p>` : ''}
     </div></section>`;
   const el = $('.howto', layer);
-  const close = () => { el.classList.add('out'); $('.scrim', layer).style.opacity = '0'; $('.scrim', layer).style.transition = 'opacity .25s'; setTimeout(() => layer.remove(), 240);
+  const close = () => { pauseMedia(el); el.classList.add('out'); $('.scrim', layer).style.opacity = '0'; $('.scrim', layer).style.transition = 'opacity .25s'; setTimeout(() => layer.remove(), 240);
     document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
   const onKey = (k) => { if (k.key === 'Escape' && !$('.viewer')) close(); };
   layer.addEventListener('click', (ev) => { if (ev.target.closest('[data-close]') || ev.target.classList.contains('scrim')) return close();
     if (ev.target.closest('[data-zoom]')) openPhoto({ name: x.name, image: x.image, full: x.full, formPoints: x.cues }); });
   document.addEventListener('keydown', onKey); window.addEventListener('hashchange', close);
-  document.body.append(layer); $('[data-close]', el).focus({ preventScroll: true });
+  document.body.append(layer); playMedia(el); $('[data-close]', el).focus({ preventScroll: true });
 }
 
 /* Block 1 keeps its original wording ("Workout 3 done: …") so lines written before blocks existed are still recognised. */
@@ -875,7 +906,7 @@ function openSession({ b, w, prog, pr, save, from, onClose }) {
       <div class="pl-where"><b class="pl-sec"></b><span class="pl-count"></span></div><span class="pl-clock" aria-label="Time so far"></span></header>
     <div class="pl-prog" aria-hidden="true">${counts.map(([k, n]) => `<span class="pp-${SECS[k].id}" style="flex:${n}"><i></i></span>`).join('')}</div>
     <main class="pl-main">
-      <div class="pl-stage"><button class="pl-photo" data-p="zoom" aria-label="Enlarge picture"><img alt="" width="800" height="600" decoding="async"><span class="pl-ribbon"></span><span class="pl-badge"></span></button></div>
+      <div class="pl-stage"><button class="pl-photo" data-p="zoom" aria-label="Enlarge picture"><img class="pl-still" alt="" width="800" height="600" decoding="async"><video class="pl-vid mv-vid" muted playsinline loop preload="metadata" disablepictureinpicture></video><span class="pl-ribbon"></span><span class="pl-badge"></span></button></div>
       <div class="pl-info"><span class="pl-kicker"></span><h2 class="pl-name"></h2><span class="pl-amt"></span></div>
       <div class="pl-timer"><span class="pl-phase"></span><b class="pl-digits" aria-live="off">0:00</b><div class="pl-bar"><i></i></div><span class="pl-status" role="status" aria-live="polite"></span></div>
       <div class="pl-extra"></div>
@@ -942,7 +973,18 @@ function openSession({ b, w, prog, pr, save, from, onClose }) {
     const s = cur(), resting = P.phase !== 'work', show = P.phase === 'rest' ? nextWork() || s : s;
     el.dataset.phase = P.phase; el.dataset.sec = SECS[show.sec].id; el.classList.toggle('is-paused', !P.running);
     if (full) {
-      const src = show.image || ''; if (src !== shownImg) { img.src = src; shownImg = src; img.parentElement.classList.toggle('no-img', !src); }
+      const src = show.image || ''; const vsrc = (!prefersReduceMotion() && show.video) || '';
+      if (src !== shownImg || vsrc !== (img.parentElement.dataset.vsrc || '')) {
+        img.src = src || ''; shownImg = src; img.parentElement.dataset.vsrc = vsrc;
+        const vid = q('.pl-vid');
+        if (vid) {
+          if (vsrc) { if (vid.getAttribute('src') !== vsrc) { vid.setAttribute('src', vsrc); vid.poster = src || ''; vid.load(); }
+            vid.style.display = ''; img.style.opacity = '0';
+            try { vid.muted = true; const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+          } else { try { vid.pause(); } catch (e) {} vid.removeAttribute('src'); vid.load(); vid.style.display = 'none'; img.style.opacity = ''; }
+        }
+        img.parentElement.classList.toggle('no-img', !src); img.parentElement.classList.toggle('has-vid', !!vsrc);
+      }
       img.alt = show.name;
       q('.pl-ribbon').textContent = P.phase === 'rest' ? (s.rest.kind === 'switch' ? 'Other side next' : 'Up next') : P.phase === 'ready' ? 'Up first' : '';
       q('.pl-badge').textContent = [setLabel(show), sideLabel(show)].filter(Boolean).join(' · ');
@@ -1015,7 +1057,7 @@ function openSession({ b, w, prog, pr, save, from, onClose }) {
   iv = setInterval(() => { check(); if (!P.closed && P.phase !== 'done') paint(false); }, 250); // backup when rAF is throttled
   const pause = () => { if (!P.running) return; if (countdown()) P.left = remaining(); else P.swAcc = swMs(); P.running = false; Beep.cancel(); status.textContent = 'Paused'; Wake.off(); paint(true); };
   const resume = () => { if (P.running) return; if (countdown()) { P.endAt = Date.now() + P.left; Beep.schedule(P.left, P.phase === 'work'); } else P.swAt = Date.now(); P.running = true; status.textContent = ''; Wake.on(); paint(true); };
-  const close = () => { if (P.closed) return; P.closed = true; Beep.cancel(); Wake.off(); cancelAnimationFrame(raf); clearInterval(iv);
+  const close = () => { if (P.closed) return; P.closed = true; pauseMedia(el); Beep.cancel(); Wake.off(); cancelAnimationFrame(raf); clearInterval(iv);
     document.removeEventListener('visibilitychange', onVis); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', onHash);
     if (P.phase !== 'done') persist();
     document.documentElement.classList.remove('player-open'); el.classList.add('out'); setTimeout(() => el.remove(), 240);
